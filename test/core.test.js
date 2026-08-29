@@ -255,6 +255,9 @@ test('device realtime waveform shows only the preprocessed EEG stream', () => {
     assert.match(html, /id="eeg-canvas"/);
     assert.match(html, /id="wave-x-range"/);
     assert.match(html, /id="wave-refresh-rate"/);
+    assert.match(html, /id="metric-recording-detail"/);
+    assert.match(html, /id="wave-range"/);
+    assert.match(html, /<th>时长<\/th>/);
     for (const seconds of [5, 10, 20, 30, 60]) {
         assert.match(html, new RegExp(`<option value="${seconds}"`));
     }
@@ -264,10 +267,14 @@ test('device realtime waveform shows only the preprocessed EEG stream', () => {
     assert.match(app, /result\.filteredMicrovolts\[channelIndex\]/);
     assert.match(app, /waveformWindowPoints/);
     assert.match(app, /waveformRefreshFps/);
+    assert.match(app, /Core\.waveformScale/);
+    assert.match(app, /timelineLabel/);
+    assert.match(app, /Core\.formatDuration/);
     assert.match(app, /color:\s*'#111111'/);
     assert.doesNotMatch(app, /fill:\s*'rgba\(0,143,114/);
     assert.match(css, /\.wave-canvas-wrap\s*\{[^}]*height:\s*clamp\(340px, 52vh, 560px\)/s);
     assert.match(css, /@media\s*\(min-width:\s*1221px\)\s*and\s*\(min-height:\s*1180px\)[\s\S]*?height:\s*clamp\(560px, 52vh, 620px\)/);
+    assert.match(css, /\.wave-footer span:not\(:first-child\)/);
 });
 
 test('waveform display settings constrain the X-axis range and refresh speed', () => {
@@ -278,6 +285,20 @@ test('waveform display settings constrain the X-axis range and refresh speed', (
     assert.deepEqual(Core.normalizeWaveformDisplay({ xRangeSeconds: 7, refreshFps: 120 }), {
         xRangeSeconds: 20, refreshFps: 30,
     });
+});
+
+test('recording duration is readable without manual sample-rate arithmetic', () => {
+    assert.equal(Core.sampleCountToSeconds(37549, 250), 150.196);
+    assert.equal(Core.formatDuration(Core.sampleCountToSeconds(37549, 250)), '02:30');
+    assert.equal(Core.formatDuration(3661), '1:01:01');
+    assert.equal(Core.formatDuration(-1), '00:00');
+});
+
+test('waveform display scale keeps a startup transient from flattening the live trace', () => {
+    const scale = Core.waveformScale([50000, ...Array.from({ length: 100 }, (_, index) => 1000 + (index % 5) * 2)]);
+    assert.ok(scale.min > 900);
+    assert.ok(scale.max < 1100);
+    assert.equal(scale.clipped, true);
 });
 
 test('EEG stream statistics count gaps, missing frames and loss rate once per frame', () => {
@@ -342,11 +363,19 @@ test('device toolbar exposes the function 0x02 indicator toggle', () => {
     const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.html'), 'utf8');
     const app = fs.readFileSync(path.join(__dirname, '..', 'src', 'app.js'), 'utf8');
     assert.match(html, /id="indicator-toggle-button"/);
-    assert.match(html, /id="screenshot-button"[\s\S]*id="indicator-toggle-button"/);
+    assert.doesNotMatch(html, /id="screenshot-button"/);
+    assert.doesNotMatch(app, /screenshot-button/);
     assert.match(app, /async function toggleIndicator\(\)/);
     assert.match(app, /SDK\.FUNC\.INDICATOR_CONTROL/);
     assert.match(app, /client\.startIndicator\(\)/);
     assert.match(app, /client\.stopIndicator\(\)/);
+});
+
+test('application menu groups directories, exports and screenshots under tools', () => {
+    const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+    assert.match(main, /label: '工具'/);
+    assert.match(main, /保存当前页面截图/);
+    assert.match(main, /导出当前分析报告/);
 });
 
 test('realtime page exposes a 30-second sleep-stage stimulus protocol with safety gates', () => {

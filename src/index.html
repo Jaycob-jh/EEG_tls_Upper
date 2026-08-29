@@ -33,7 +33,6 @@
                 </div>
                 <div class="topbar-actions">
                     <div class="status-pill"><span id="header-dot"></span><span id="header-status">DISCONNECTED</span></div>
-                    <button class="button secondary" id="screenshot-button" title="保存当前页面可视区域为 PNG">保存截图</button>
                     <button class="button secondary" id="indicator-toggle-button" type="button" disabled aria-pressed="false" title="发送功能码 02，开启设备指示灯"><span class="indicator-dot" aria-hidden="true"></span>开启指示灯</button>
                     <button class="button primary" id="connect-button">连接 BLE</button>
                 </div>
@@ -44,7 +43,7 @@
                     <article class="metric"><span>设备</span><strong id="metric-device">--</strong><small id="metric-protocol">尚未发现</small></article>
                     <article class="metric"><span>当前 EEG 导联</span><strong id="metric-channel">CH2</strong><small>双极差分；可在停止状态切换</small></article>
                     <article class="metric"><span>EEG</span><strong id="metric-eeg">STOPPED</strong><small id="metric-seq">Seq --</small></article>
-                    <article class="metric"><span>记录</span><strong id="metric-recording">0</strong><small>原始样本</small></article>
+                    <article class="metric"><span>采集时长</span><strong id="metric-recording">00:00</strong><small id="metric-recording-detail">0 原始样本 · 250 Hz</small></article>
                     <article class="metric"><span>阻抗</span><strong id="metric-impedance">-- kΩ</strong><small id="metric-impedance-state">尚未检测</small></article>
                     <article class="metric"><span>电量</span><strong id="metric-battery">--%</strong><small id="metric-battery-update">尚未查询</small></article>
                     <article class="metric"><span>当前帧率</span><strong id="metric-frame-rate">0.0 FPS</strong><small>最近 2 秒</small></article>
@@ -66,9 +65,9 @@
                         </div>
                         <div class="wave-single-grid">
                             <section class="wave-stream-card processed">
-                                <div class="wave-stream-heading"><strong>预处理 EEG</strong><small>显示：0.5–45 Hz；实时分期：训练一致 0.4–18 Hz；原始 EEG 写入 EDF</small></div>
+                                <div class="wave-stream-heading"><strong>预处理 EEG</strong><small>显示：0.5–45 Hz；Y 轴以当前窗口稳健基线为 0；实时分期：训练一致 0.4–18 Hz；原始 EEG 写入 EDF</small></div>
                                 <div class="wave-canvas-wrap"><canvas id="eeg-canvas"></canvas><div class="wave-empty" id="wave-empty">连接设备并启动 EEG 后显示波形</div></div>
-                                <div class="wave-footer"><span>显示滤波：0.5–45Hz + 50Hz 陷波 · 原始数据写入 EDF</span><span id="wave-range">X 轴 20 秒 · 0 / 5000 点</span><span id="wave-value">0.00 µV</span></div>
+                                <div class="wave-footer"><span>显示滤波：0.5–45Hz + 50Hz 陷波 · Y 轴相对基线自动刻度 · 原始数据写入 EDF</span><span id="wave-range">已采集 00:00 · 当前窗口 20 秒 · 0 / 5,000 点</span><span id="wave-value" title="当前滤波后绝对值">0.00 µV</span></div>
                             </section>
                         </div>
                     </section>
@@ -177,7 +176,7 @@
                 </div>
                 <div class="record-table-wrap">
                     <table class="record-table">
-                        <thead><tr><th>开始时间</th><th>通道</th><th>方案</th><th>样本</th><th>文件</th><th>状态</th><th>操作</th></tr></thead>
+                        <thead><tr><th>开始时间</th><th>通道</th><th>方案</th><th>样本</th><th>时长</th><th>文件</th><th>状态</th><th>操作</th></tr></thead>
                         <tbody id="record-list"></tbody>
                     </table>
                 </div>

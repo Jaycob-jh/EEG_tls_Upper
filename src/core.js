@@ -35,6 +35,50 @@
         };
     }
 
+    function formatDuration(seconds) {
+        const totalSeconds = Math.max(0, Math.floor(Number(seconds) || 0));
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const rest = totalSeconds % 60;
+        const pad = value => String(value).padStart(2, '0');
+        return hours > 0 ? `${hours}:${pad(minutes)}:${pad(rest)}` : `${pad(minutes)}:${pad(rest)}`;
+    }
+
+    function sampleCountToSeconds(sampleCount, sampleRateHz = 250) {
+        const count = Math.max(0, Number(sampleCount) || 0);
+        const rate = Number(sampleRateHz);
+        return rate > 0 ? count / rate : 0;
+    }
+
+    function percentile(sortedValues, ratio) {
+        if (!sortedValues.length) return 0;
+        const index = Math.max(0, Math.min(sortedValues.length - 1, (sortedValues.length - 1) * ratio));
+        const lower = Math.floor(index);
+        const upper = Math.ceil(index);
+        if (lower === upper) return sortedValues[lower];
+        return sortedValues[lower] + (sortedValues[upper] - sortedValues[lower]) * (index - lower);
+    }
+
+    // The display scale intentionally ignores the most extreme 2% at each end.
+    // A lead settling transient should not flatten the rest of the live EEG view;
+    // this changes only the plot bounds, never the samples written to EDF.
+    function waveformScale(values, options = {}) {
+        const finiteValues = Array.from(values || [], Number).filter(Number.isFinite).sort((a, b) => a - b);
+        if (!finiteValues.length) return { min: -50, max: 50, center: 0, clipped: false };
+        const minimumSpanUv = Math.max(1, Number(options.minimumSpanUv) || 100);
+        const center = percentile(finiteValues, .5);
+        const lower = percentile(finiteValues, finiteValues.length < 20 ? 0 : .02);
+        const upper = percentile(finiteValues, finiteValues.length < 20 ? 1 : .98);
+        const robustHalfRange = Math.max(Math.abs(center - lower), Math.abs(upper - center), 1);
+        const halfRange = Math.max(minimumSpanUv / 2, robustHalfRange * 1.15);
+        const min = center - halfRange;
+        const max = center + halfRange;
+        return {
+            min, max, center,
+            clipped: finiteValues[0] < min || finiteValues.at(-1) > max,
+        };
+    }
+
     function formatLocalIso(date = new Date()) {
         const value = date instanceof Date ? date : new Date(date);
         const offsetMinutes = -value.getTimezoneOffset();
@@ -377,7 +421,9 @@
 
     return Object.freeze({
         ACTION_TYPES, PLAN_MODES, START_GRACE_SECONDS,
-        WAVEFORM_X_RANGES_SECONDS, WAVEFORM_REFRESH_RATES_FPS, normalizeWaveformDisplay, FIXED_PLAN_EEG_CHANNEL, FIXED_PLAN_LIGHT_CHANNEL, normalizePlan,
+        WAVEFORM_X_RANGES_SECONDS, WAVEFORM_REFRESH_RATES_FPS, normalizeWaveformDisplay,
+        formatDuration, sampleCountToSeconds, waveformScale,
+        FIXED_PLAN_EEG_CHANNEL, FIXED_PLAN_LIGHT_CHANNEL, normalizePlan,
         EEG_CSV_COLUMNS, eegCsvLine, createEegStreamStats, trackEegStreamFrame, eegStreamFrameRate, eegStreamLossRate,
         parseTimeOfDay, formatLocalIso, validatePlan, PlanEngine, csvEscape, bytesToHex, makeId,
     });

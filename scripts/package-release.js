@@ -81,10 +81,6 @@ async function main() {
     else executablePath = appPath;
     if (!fs.existsSync(executablePath)) throw new Error(`未找到目标启动文件：${executablePath}`);
 
-    if (platform === 'darwin') {
-        execFileSync('codesign', ['--deep', '--force', '--sign', '-', executablePath], { stdio: 'inherit' });
-    }
-
     const manifest = {
         productName: PACKAGE.productName,
         version: PACKAGE.version,
@@ -97,7 +93,19 @@ async function main() {
         nativeRuntime: 'onnxruntime-node filtered for target platform',
         builtAt: new Date().toISOString(),
     };
-    await fsp.writeFile(path.join(appPath, 'build-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+    // macOS code signing seals the bundle's Contents directory and rejects
+    // arbitrary files placed beside Contents at the .app root.
+    const manifestPath = platform === 'darwin'
+        ? path.join(appPath, 'Contents', 'Resources', 'build-manifest.json')
+        : path.join(appPath, 'build-manifest.json');
+    await fsp.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+
+    // Sign after every bundle file has been written; otherwise the manifest
+    // added above makes macOS report an unsealed application bundle.
+    if (platform === 'darwin') {
+        execFileSync('codesign', ['--deep', '--force', '--sign', '-', executablePath], { stdio: 'inherit' });
+    }
+
     console.log(JSON.stringify(manifest, null, 2));
 }
 

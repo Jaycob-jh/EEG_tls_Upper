@@ -39,7 +39,7 @@ test('records page opens a non-modal analysis window and exposes useful native f
     assert.doesNotMatch(html, /id="analysis-dialog"/);
     assert.match(analysisHtml, /class="analysis-window-content"/);
     assert.match(analysisHtml, /id="analysis-dialog-close"/);
-    assert.match(html, /保存截图/);
+    assert.doesNotMatch(html, /id="screenshot-button"/);
     assert.match(app, /openAnalysisWindow/);
     assert.match(ui, /async function openForSession\(sessionId\)/);
     assert.match(ui, /closeAnalysisWindow/);
@@ -51,5 +51,6 @@ test('records page opens a non-modal analysis window and exposes useful native f
     assert.match(read('analysis-preload.js'), /analysis:viewport/);
     assert.match(main, /打开数据目录/);
     assert.match(main, /导出当前分析报告/);
+    assert.match(main, /保存当前页面截图/);
     assert.match(css, /\.analysis-window-content\s*\{/);
 });

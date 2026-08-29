@@ -45,7 +45,7 @@ function configureApplicationMenu() {
         });
     }
     template.push({
-        label: '文件',
+        label: '工具',
         submenu: [
             { label: '打开数据目录', click: () => { void openDataDirectory('root'); } },
             { label: '打开会话目录', click: () => { void openDataDirectory('sessions'); } },

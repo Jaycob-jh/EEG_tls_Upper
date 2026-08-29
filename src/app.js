@@ -105,6 +105,30 @@
         return new Date(value).toLocaleString('zh-CN', { hour12: false });
     }
 
+    function recordingSampleRate(session = state.activeSession) {
+        const rate = Number(session?.sampleRateHz);
+        return rate > 0 ? rate : 250;
+    }
+
+    function sessionDurationSeconds(session) {
+        const rows = Number(session?.rows);
+        if (Number.isFinite(rows) && rows >= 0) return Core.sampleCountToSeconds(rows, recordingSampleRate(session));
+        const started = Date.parse(session?.startedAt);
+        const ended = Date.parse(session?.endedAt);
+        return Number.isFinite(started) && Number.isFinite(ended) && ended >= started ? (ended - started) / 1000 : 0;
+    }
+
+    function currentRecordingDurationSeconds() {
+        if (!state.activeSession) return 0;
+        return Core.sampleCountToSeconds(state.sampleIndex, recordingSampleRate());
+    }
+
+    function timelineLabel(seconds, live = false) {
+        const safeSeconds = Math.max(0, Math.floor(Number(seconds) || 0));
+        if (!live) return safeSeconds === 0 ? '0 s' : `-${safeSeconds} s`;
+        return `T+${Core.formatDuration(safeSeconds)}`;
+    }
+
     function logProtocol(direction, text, level = 'normal') {
         const line = document.createElement('div');
         line.className = 'log-line';
@@ -216,12 +240,23 @@
         $('debug-channel').value = String(state.selectedChannel);
         $('wave-x-range').value = String(state.waveformWindowSeconds);
         $('wave-refresh-rate').value = String(state.waveformRefreshFps);
-        $('wave-title').innerHTML = `CH${state.selectedChannel} 预处理实时波形 <small class="wave-sync-note">显示 0.5–45 Hz + 50 Hz 陷波 · 分期输入训练一致 0.4–18 Hz</small>`;
-        $('metric-recording').textContent = state.activeSession ? String(state.sampleIndex) : '0';
+        $('wave-title').innerHTML = `CH${state.selectedChannel} 预处理实时波形 <small class="wave-sync-note">显示 0.5–45 Hz + 50 Hz 陷波 · Y 轴自动刻度 · 分期输入训练一致 0.4–18 Hz</small>`;
+        const sampleCount = state.activeSession ? state.sampleIndex : 0;
+        const sampleRate = recordingSampleRate();
+        $('metric-recording').textContent = Core.formatDuration(currentRecordingDurationSeconds());
+        $('metric-recording-detail').textContent = `${sampleCount.toLocaleString()} 原始样本 · ${sampleRate} Hz`;
         $('metric-seq').textContent = state.streamStats.lastSeq == null ? 'Seq --' : `Seq ${state.streamStats.lastSeq} · 丢 ${state.streamStats.lostFrames}`;
         updateStreamMetricsUi();
         const windowPoints = waveformWindowPoints();
-        $('wave-range').textContent = `X 轴 ${state.waveformWindowSeconds} 秒 · ${Math.min(state.waveform.length, windowPoints)} / ${windowPoints} 点`;
+        const visiblePoints = Math.min(state.waveform.length, windowPoints);
+        const elapsedSeconds = currentRecordingDurationSeconds();
+        const windowSeconds = Math.min(state.waveformWindowSeconds, Core.sampleCountToSeconds(visiblePoints, 250));
+        const liveWindow = state.activeSession && visiblePoints > 0
+            ? `${timelineLabel(Math.max(0, elapsedSeconds - windowSeconds), true)} → ${timelineLabel(elapsedSeconds, true)}`
+            : `窗口 ${state.waveformWindowSeconds} 秒`;
+        $('wave-range').textContent = state.activeSession
+            ? `已采集 ${Core.formatDuration(elapsedSeconds)} · ${liveWindow} · ${visiblePoints.toLocaleString()} / ${windowPoints.toLocaleString()} 点`
+            : `窗口 ${state.waveformWindowSeconds} 秒 · ${visiblePoints.toLocaleString()} / ${windowPoints.toLocaleString()} 点`;
         if (state.lastEeg) {
             const index = state.selectedChannel - 1;
             $('wave-value').textContent = `${state.lastEeg.filteredMicrovolts[index].toFixed(2)} µV`;
@@ -1466,12 +1501,12 @@
         state.sessions = await window.desktopAPI.listSessions();
         const body = $('record-list');
         if (!state.sessions.length) {
-            body.innerHTML = '<tr><td colspan="7"><div class="empty-state">暂无采集记录</div></td></tr>';
+            body.innerHTML = '<tr><td colspan="8"><div class="empty-state">暂无采集记录</div></td></tr>';
             return;
         }
         body.innerHTML = state.sessions.map(session => `<tr>
             <td>${escapeHtml(formatDateTime(session.startedAt))}</td><td>CH${session.selectedChannel}</td><td>${escapeHtml(session.planName || '手动采集')}</td>
-            <td>${Number(session.rows || 0).toLocaleString()}</td><td>${session.storageFormat === 'EDF' ? 'EDF' : 'CSV（旧版）'}</td><td><span class="state-badge ${session.status === 'completed' ? '' : 'off'}">${escapeHtml(session.status)}</span></td>
+            <td>${Number(session.rows || 0).toLocaleString()}</td><td title="${recordingSampleRate(session)} Hz 有效数据">${Core.formatDuration(sessionDurationSeconds(session))}</td><td>${session.storageFormat === 'EDF' ? 'EDF' : 'CSV（旧版）'}</td><td><span class="state-badge ${session.status === 'completed' ? '' : 'off'}">${escapeHtml(session.status)}</span></td>
             <td><button class="button text analyze-session" data-session-id="${escapeHtml(session.id)}">分析</button><button class="button text reveal-session" data-directory="${escapeHtml(session.directory)}">打开目录</button></td>
         </tr>`).join('');
     }
@@ -1518,10 +1553,6 @@
 
     function setupEvents() {
         $('connect-button').addEventListener('click', () => runUiTask(connectBle));
-        $('screenshot-button').addEventListener('click', () => runUiTask(async () => {
-            const file = await window.desktopAPI.saveScreenshot($('page-title').textContent || '当前页面');
-            if (file) toast(`当前页面截图已保存：${file}`);
-        }));
         $('indicator-toggle-button').addEventListener('click', () => runUiTask(toggleIndicator));
         $('wave-x-range').addEventListener('change', event => {
             const display = Core.normalizeWaveformDisplay({
@@ -1698,29 +1729,55 @@
             context.setTransform(ratio, 0, 0, ratio, 0, 0);
             context.clearRect(0, 0, width, height);
             context.fillStyle = '#fbfdfe'; context.fillRect(0, 0, width, height);
-            context.strokeStyle = '#e3e9ed'; context.lineWidth = 1;
-            for (let x = 52; x < width; x += Math.max(100, (width - 70) / 6)) { context.beginPath(); context.moveTo(x, 18); context.lineTo(x, height - 34); context.stroke(); }
-            for (let y = 24; y < height - 32; y += Math.max(70, (height - 56) / 5)) { context.beginPath(); context.moveTo(50, y); context.lineTo(width - 16, y); context.stroke(); }
             const values = stream.values();
-            if (values.length < 2) return;
-            let min = Infinity, max = -Infinity;
-            for (const value of values) { if (Number.isFinite(value)) { min = Math.min(min, value); max = Math.max(max, value); } }
-            if (!Number.isFinite(min) || !Number.isFinite(max)) return;
-            if (max - min < 1) { min -= .5; max += .5; }
-            const plotX = 52, plotY = 18, plotW = width - 70, plotH = height - 52;
+            const plotX = 58, plotY = 18, plotW = Math.max(1, width - 74), plotH = Math.max(1, height - 52);
+            const plotBottom = plotY + plotH;
+            const scale = Core.waveformScale(values);
+            const live = Boolean(state.activeSession);
+            const visibleSeconds = Math.min(state.waveformWindowSeconds, Core.sampleCountToSeconds(values.length, 250));
+            const elapsedSeconds = currentRecordingDurationSeconds();
+            const axisStart = live ? Math.max(0, elapsedSeconds - visibleSeconds) : state.waveformWindowSeconds;
+            const axisEnd = live ? elapsedSeconds : 0;
+
+            context.strokeStyle = '#e3e9ed'; context.lineWidth = 1;
+            const xTickCount = 5;
+            for (let index = 0; index <= xTickCount; index++) {
+                const x = plotX + plotW * index / xTickCount;
+                context.beginPath(); context.moveTo(x, plotY); context.lineTo(x, plotBottom); context.stroke();
+            }
+            const yTickCount = 4;
+            for (let index = 0; index <= yTickCount; index++) {
+                const y = plotY + plotH * index / yTickCount;
+                context.beginPath(); context.moveTo(plotX, y); context.lineTo(width - 16, y); context.stroke();
+            }
+            if (values.length < 2 || !Number.isFinite(scale.min) || !Number.isFinite(scale.max)) return;
             const xFor = index => plotX + index * plotW / Math.max(1, values.length - 1);
-            const yFor = value => plotY + (max - value) * plotH / (max - min);
+            const yFor = value => {
+                const bounded = Math.max(scale.min, Math.min(scale.max, Number(value)));
+                return plotY + (scale.max - bounded) * plotH / (scale.max - scale.min);
+            };
             context.strokeStyle = stream.color; context.lineWidth = 1.15; context.lineJoin = 'round'; context.lineCap = 'round';
             const samplesPerPixel = values.length / Math.max(1, plotW);
             if (samplesPerPixel <= 1.25) {
-                context.beginPath(); values.forEach((value, index) => { const x = xFor(index), y = yFor(value); if (index) context.lineTo(x, y); else context.moveTo(x, y); }); context.stroke();
+                context.beginPath();
+                let started = false;
+                values.forEach((value, index) => {
+                    if (!Number.isFinite(value)) { started = false; return; }
+                    const x = xFor(index), y = yFor(value);
+                    if (started) context.lineTo(x, y); else context.moveTo(x, y);
+                    started = true;
+                });
+                context.stroke();
             } else {
                 const columns = [];
                 for (let pixel = 0; pixel < plotW; pixel++) {
                     const start = Math.floor(pixel * samplesPerPixel);
                     const end = Math.min(values.length, Math.ceil((pixel + 1) * samplesPerPixel));
                     let low = Infinity, high = -Infinity;
-                    for (let index = start; index < end; index++) { low = Math.min(low, values[index]); high = Math.max(high, values[index]); }
+                    for (let index = start; index < end; index++) {
+                        if (!Number.isFinite(values[index])) continue;
+                        low = Math.min(low, values[index]); high = Math.max(high, values[index]);
+                    }
                     if (Number.isFinite(low)) columns.push({ x: plotX + pixel, low: yFor(low), high: yFor(high) });
                 }
                 context.beginPath();
@@ -1730,11 +1787,24 @@
                 }
                 context.stroke();
             }
-            context.fillStyle = '#657680'; context.font = '10px Segoe UI';
-            context.fillText(`${max.toFixed(1)} µV`, 5, plotY + 4);
-            context.fillText(`${min.toFixed(1)} µV`, 5, plotY + plotH);
-            context.fillText(`-${state.waveformWindowSeconds} s`, plotX, height - 10);
-            context.fillText('0 s', width - 35, height - 10);
+            context.fillStyle = '#657680'; context.font = '10px Segoe UI'; context.textBaseline = 'alphabetic';
+            for (let index = 0; index <= yTickCount; index++) {
+                const y = plotY + plotH * index / yTickCount;
+                const value = scale.max - (scale.max - scale.min) * index / yTickCount - scale.center;
+                const prefix = value > 0 ? '+' : '';
+                context.fillText(`${prefix}${value.toFixed(1)} µV`, 5, Math.min(plotBottom, y + 4));
+            }
+            for (let index = 0; index <= xTickCount; index++) {
+                const x = plotX + plotW * index / xTickCount;
+                context.textAlign = index === 0 ? 'left' : (index === xTickCount ? 'right' : 'center');
+                const seconds = axisStart + (axisEnd - axisStart) * index / xTickCount;
+                context.fillText(timelineLabel(seconds, live), x, height - 10);
+            }
+            context.textAlign = 'left';
+            if (scale.clipped) {
+                context.fillStyle = '#9a6a12';
+                context.fillText('极端瞬态已压缩', Math.max(plotX, width - 112), plotY + 12);
+            }
         }
         function draw(timestamp) {
             requestAnimationFrame(draw);
@@ -1812,7 +1882,10 @@
         await Promise.all([loadPlans(), loadSessions()]);
         planEngine.start();
         state.relativePlanRefreshTimer = setInterval(() => { if (planEngine.getRelativeStatus()) renderNextAction(); }, 500);
-        state.streamMetricsTimer = setInterval(updateStreamMetricsUi, 500);
+        state.streamMetricsTimer = setInterval(() => {
+            updateStreamMetricsUi();
+            if (state.activeSession) updateEegUi();
+        }, 500);
         await audit('app_started', { version: '0.3.1', sdkVersion: SDK.VERSION });
         if (window.desktopAPI.getLaunchMode() === 'device-diagnostic') {
             $('header-status').textContent = 'PRESS ANY KEY TO DIAGNOSE';
