@@ -1,0 +1,29 @@
+{
+  "name": "brainlume-desktop",
+  "productName": "曹操",
+  "version": "0.3.1",
+  "description": "BrainLume CH2 EEG and light-stimulation desktop controller",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "package:mac": "npm run package:mac:arm64",
+    "package:win:x64": "node scripts/package-release.js --platform win32 --arch x64",
+    "package:mac:arm64": "node scripts/package-release.js --platform darwin --arch arm64",
+    "package:release": "node scripts/package-release.js",
+    "capture:smoke": "electron . --capture-smoke",
+    "diagnose:device": "electron . --device-diagnostic",
+    "audit:realtime-input": "node scripts/audit-realtime-input.js",
+    "audit:realtime-inference": "node scripts/audit-realtime-inference.js",
+    "debug:device": "node debug-cli.js",
+    "check": "node --check main.js && node --check preload.js && node --check debug-cli.js && node --check analysis-worker.js && node --check sleep-stage-worker.js && node --check src/edf.js && node --check src/core.js && node --check src/analysis-core.js && node --check src/analysis-report.js && node --check src/analysis-ui.js && node --check src/realtime-sleep.js && node --check src/transport.js && node --check src/app.js && node --check src/debug.js",
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "^43.3.0"
+  },
+  "dependencies": {
+    "onnxruntime-node": "^1.27.0"
+  }
+}

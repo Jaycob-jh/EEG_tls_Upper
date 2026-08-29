@@ -1,0 +1,3 @@
+# Install with the Python interpreter used by the desktop app:
+# py -3 -m pip install -r python\requirements-yasa.txt
+yasa

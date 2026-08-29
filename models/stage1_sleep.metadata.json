@@ -1,0 +1,52 @@
+{
+  "experiment": "I:\\\u5149\u8c03\u63a7\\\u95ed\u73af\u8111\u8c03\u63a7\\CNN\\dreem_data\\experiments\\wearable\\fp1fp2\\finetune_from_dodh\\cca1a066-c386-4eb4-9eb7-6251e8748e2a",
+  "onnx": "I:\\\u5149\u8c03\u63a7\\\u95ed\u73af\u8111\u8c03\u63a7\\EEG_tls_Upper\\models\\stage1_sleep.onnx",
+  "stage_names": {
+    "0": "W",
+    "1": "N1",
+    "2": "N2",
+    "3": "N3",
+    "4": "REM"
+  },
+  "input_names": [
+    "eeg",
+    "epoch_index",
+    "epoch_cycle_index"
+  ],
+  "output_names": [
+    "logits",
+    "prob"
+  ],
+  "output_layout": "temporal_context_by_5",
+  "center_output_index": 10,
+  "eeg_shape": [
+    1,
+    21,
+    1,
+    3000
+  ],
+  "epoch_index_shape": [
+    1,
+    21,
+    1
+  ],
+  "epoch_cycle_index_shape": [
+    1,
+    21,
+    5
+  ],
+  "temporal_context": 21,
+  "epoch_seconds": 30,
+  "model_rate_hz": 100,
+  "window_length": 3000,
+  "center_delay_epochs": 10,
+  "center_delay_seconds": 300,
+  "preprocessing": {
+    "input_eeg_unit": "mV",
+    "device_eeg_unit": "uV",
+    "device_to_model_scale": 0.001,
+    "resample_to_hz": 100,
+    "epoch_seconds": 30,
+    "samples_per_epoch": 3000
+  }
+}

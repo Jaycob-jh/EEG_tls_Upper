@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>曹操</title>
+    <style>
+        * { box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
+        body { display: grid; place-items: center; font-family: "Songti SC", "STSong", "Microsoft YaHei", serif; user-select: none; }
+        .splash {
+            position: relative; width: 100%; height: 100%; overflow: hidden; border-radius: 24px;
+            background: #15130f; box-shadow: 0 28px 80px rgba(0,0,0,.48);
+            animation: splashReveal .45s ease-out both;
+        }
+        .portrait {
+            position: absolute; inset: -3%; width: 106%; height: 106%; object-fit: cover;
+            animation: splashZoom 2.5s cubic-bezier(.2,.65,.25,1) both;
+        }
+        .shade { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(5,8,10,.05) 44%, rgba(9,10,13,.88) 100%); }
+        .glow { position: absolute; inset: 0; background: radial-gradient(circle at 50% 38%, rgba(244,205,104,.12), transparent 52%); animation: glowPulse 1.8s ease-in-out both; }
+        .copy { position: absolute; left: 0; right: 0; bottom: 42px; text-align: center; color: #f6e4ad; animation: copyRise .75s .55s ease-out both; }
+        h1 { margin: 0; font-size: 50px; letter-spacing: .22em; text-indent: .22em; text-shadow: 0 3px 18px rgba(0,0,0,.75); }
+        p { margin: 9px 0 0; color: rgba(255,255,255,.72); font-family: Inter, "Microsoft YaHei", sans-serif; font-size: 12px; letter-spacing: .34em; text-indent: .34em; }
+        .line { width: 0; height: 1px; margin: 17px auto 0; background: linear-gradient(90deg, transparent, #e7bd54, transparent); animation: lineOpen .8s .85s ease-out forwards; }
+        @keyframes splashReveal { from { opacity: 0; transform: scale(.97); } to { opacity: 1; transform: scale(1); } }
+        @keyframes splashZoom { from { transform: scale(1.08); filter: brightness(.76); } to { transform: scale(1); filter: brightness(1); } }
+        @keyframes glowPulse { 0% { opacity: 0; } 55% { opacity: 1; } 100% { opacity: .55; } }
+        @keyframes copyRise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes lineOpen { to { width: 190px; } }
+    </style>
+</head>
+<body>
+    <main class="splash" aria-label="曹操正在启动">
+        <img class="portrait" src="../assets/cao-cao-splash-original.png" alt="曹操武将形象">
+        <div class="shade"></div>
+        <div class="glow"></div>
+        <div class="copy"><h1>曹操</h1><div class="line"></div><p>EEG 闭环平台</p></div>
+    </main>
+</body>
+</html>

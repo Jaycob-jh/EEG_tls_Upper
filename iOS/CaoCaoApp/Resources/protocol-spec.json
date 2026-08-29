@@ -1,0 +1,13 @@
+{
+  "deviceName": "BrainLume2.0C",
+  "service": "0000ABF0-0000-1000-8000-00805F9B34FB",
+  "write": "0000ABF1-0000-1000-8000-00805F9B34FB",
+  "notify": "0000ABF2-0000-1000-8000-00805F9B34FB",
+  "actionBus": {
+    "header": [170, 85],
+    "crc": "CRC-16/MODBUS, high byte first",
+    "status": { "function": 1, "stat": 16 },
+    "eegRawFunction": 34,
+    "fixedPlanEEGChannel": 2
+  }
+}
