@@ -32,6 +32,18 @@ test('quality metrics detect flatline and excessive amplitude', () => {
     assert.equal(Sleep.qualityMetrics([0, 1, -1, 1]).ok, true);
 });
 
+test('sleep-stage smoother normalizes probabilities and reduces one-epoch label flips', () => {
+    const smoother = new Sleep.SleepStageSmoother({ alpha: 0.5 });
+    const first = smoother.update([1, 0, 0, 0, 0]);
+    assert.equal(first.stageIndex, 0);
+    const second = smoother.update([0, 0, 0, 0, 1]);
+    assert.equal(second.stageIndex, 0);
+    assert.ok(Math.abs(second.probabilities.reduce((sum, value) => sum + value, 0) - 1) < 1e-12);
+    const third = smoother.update([0, 0, 0, 0, 1]);
+    assert.equal(third.stageIndex, 4);
+    assert.equal(third.changed, true);
+});
+
 test('spectral features expose a bounded delta-power ratio for the live quality gate', () => {
     const delta = Array.from({ length: 1000 }, (_, index) => Math.sin(2 * Math.PI * 2 * index / 250));
     const alpha = Array.from({ length: 1000 }, (_, index) => Math.sin(2 * Math.PI * 10 * index / 250));
@@ -92,6 +104,8 @@ test('diagnostic causal pipeline classifies the latest epoch after the first win
     assert.equal(first.classifiedEpochIndex, 0);
     assert.equal(first.outputIndex, 2);
     assert.equal(first.targetQuality.ok, true);
+    assert.equal(first.controlEligible, false);
+    assert.equal(first.controlEligibilityReason, 'insufficient_context');
     assert.deepEqual(Array.from(first.eeg, value => Number(value.toFixed(3))), [0, 0.002, 0, 0.002, 0, 0.002]);
     assert.deepEqual(Array.from(first.epochIndex), [0, 0, 0]);
 
@@ -101,6 +115,13 @@ test('diagnostic causal pipeline classifies the latest epoch after the first win
     assert.deepEqual(Array.from(second.eeg, value => Number(value.toFixed(3))), [0, 0.002, 0, 0.002, 0.004, 0.006]);
     assert.deepEqual(Array.from(second.epochIndex.slice(0, 2)), [0, 0]);
     assert.ok(Math.abs(second.epochIndex[2] - 1 / 1200) < 1e-8);
+    assert.equal(second.controlEligible, false);
+
+    for (let sample = 8; sample < 12; sample++) pipeline.push(sample);
+    const full = pipeline.onlineInferenceInput();
+    assert.equal(full.controlEligible, true);
+    assert.equal(full.contextQualityOk, true);
+    assert.equal(full.controlEligibilityReason, 'causal_latest_epoch');
 });
 
 test('sleep-stage stimulus protocol validates safety limits', () => {

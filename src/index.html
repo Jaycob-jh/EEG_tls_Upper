@@ -108,10 +108,10 @@
                     <div><p class="eyebrow">REALTIME PREPROCESSING & SLEEP STAGING</p><h2>实时预处理与睡眠分期</h2></div>
                     <label class="realtime-enable"><input type="checkbox" id="realtime-enabled" checked> 启用实时分析</label>
                 </div>
-                  <div class="notice analysis-disclaimer">研究用途。当前模型固定接收 21 个 epoch（每个 30 秒），完成约 10.5 分钟数据后开始训练一致的中心输出，之后每 30 秒更新一次；中心输出对应约 5 分钟前的目标 epoch，仅用于显示与验证，暂不直接触发光刺激。结果不构成医疗诊断。</div>
+                <div class="notice analysis-disclaimer">研究用途。模型固定接收 21 个 epoch（每个 30 秒）：当前因果候选从首个 epoch 开始显示，收满约 10.5 分钟且整段质量通过后才具备实验性闭环资格；训练一致的中心输出约延迟 5 分钟，仅用于回顾性验证。默认验证模式只记录命中，不发光；结果不构成医疗诊断。</div>
                 <div class="analysis-metrics realtime-metrics">
                     <article class="analysis-metric"><span>模型</span><strong id="realtime-model">加载中</strong><small id="realtime-model-detail">Stage-1 ONNX</small></article>
-                    <article class="analysis-metric"><span>模型输入</span><strong>250→100 Hz</strong><small>训练一致 0.4–18 Hz + 陷波</small></article>
+                    <article class="analysis-metric"><span>模型输入</span><strong>250→100 Hz</strong><small>0.4–18 Hz + 陷波 · 21×30 秒</small></article>
                     <article class="analysis-metric"><span>Epoch</span><strong id="realtime-epoch">0 epoch</strong><small id="realtime-progress">当前窗口 0%</small></article>
                     <article class="analysis-metric"><span>当前分期</span><strong id="realtime-stage">等待数据</strong><small id="realtime-stage-time">尚无结果</small></article>
                     <article class="analysis-metric"><span>信号质量</span><strong id="realtime-quality">--</strong><small id="realtime-quality-detail">等待 30 秒 epoch</small></article>
@@ -137,7 +137,7 @@
                         <div><p class="eyebrow">STAGE-TRIGGERED STIMULATION</p><h3>分期触发刺激协议</h3></div>
                         <label class="realtime-enable"><input type="checkbox" id="sleep-stimulus-enabled"> 启用协议</label>
                     </div>
-                    <div class="sleep-stimulus-warning">连续命中可自行设置：1 个 epoch 约 30 秒，2 个约 60 秒，依此类推。分期改变、信号质量不通过或置信度不足会清零计数。默认启用“验证模式”，只记录目标分期命中，不向设备发光；关闭验证模式前请先完成人工分期和安全参数验收。点击“全部停止”、停止 EEG、关闭实时分析或 BLE 断开都会解除协议；每次启动软件也需要重新启用。</div>
+                    <div class="sleep-stimulus-warning">连续命中可自行设置：1 个 epoch 约 30 秒，2 个约 60 秒，依此类推。分期改变、上下文质量不通过、信号质量不通过或置信度不足会清零计数。闭环只接受当前因果候选，不使用约 5 分钟延迟的中心回顾输出；默认启用“验证模式”，只记录目标分期命中，不向设备发光。若目标选择 N3，还必须满足 δ 慢波证据下限。点击“全部停止”、停止 EEG、关闭实时分析或 BLE 断开都会解除协议；每次启动软件也需要重新启用。</div>
                     <div class="sleep-stimulus-form">
                         <fieldset class="sleep-stage-selector">
                             <legend>目标分期（可多选）</legend>

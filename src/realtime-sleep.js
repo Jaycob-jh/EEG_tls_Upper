@@ -65,6 +65,53 @@
         return errors;
     }
 
+    function normalizeProbabilities(values) {
+        const result = Array.from(values || [], Number)
+            .slice(0, STAGES.length)
+            .map(value => Number.isFinite(value) ? Math.max(0, value) : 0);
+        while (result.length < STAGES.length) result.push(0);
+        const sum = result.reduce((total, value) => total + value, 0);
+        return sum > 0 ? result.map(value => value / sum) : STAGES.map(() => 1 / STAGES.length);
+    }
+
+    /**
+     * 对相邻 epoch 的模型概率做指数平滑。
+     * 这只用于减少实时显示和闭环候选的单 epoch 抖动，不会改变原始 EEG，
+     * 也不等价于在没有人工标注数据时提高模型的真实分类准确率。
+     */
+    class SleepStageSmoother {
+        constructor(options = {}) {
+            this.alpha = Number(options.alpha ?? 0.5);
+            if (!(this.alpha > 0 && this.alpha <= 1)) throw new RangeError('睡眠分期平滑 alpha 必须为 0~1');
+            this.reset();
+        }
+
+        reset() {
+            this.probabilities = null;
+            this.stageIndex = null;
+        }
+
+        update(values) {
+            const rawProbabilities = normalizeProbabilities(values);
+            const probabilities = this.probabilities
+                ? rawProbabilities.map((value, index) => this.probabilities[index] * (1 - this.alpha) + value * this.alpha)
+                : rawProbabilities.slice();
+            const normalized = normalizeProbabilities(probabilities);
+            const ranked = normalized.map((value, index) => ({ value, index })).sort((left, right) => right.value - left.value);
+            const previousStageIndex = this.stageIndex;
+            this.probabilities = normalized;
+            this.stageIndex = ranked[0].index;
+            return {
+                probabilities: normalized,
+                stageIndex: this.stageIndex,
+                confidence: ranked[0].value,
+                margin: ranked[0].value - ranked[1].value,
+                changed: previousStageIndex != null && previousStageIndex !== this.stageIndex,
+                rawProbabilities,
+            };
+        }
+    }
+
     function lightStimulusPresentation(value = {}) {
         const state = value && typeof value === 'object' ? value : {};
         if (!state.connected) {
@@ -102,8 +149,7 @@
             const errors = validateStimulusProtocol(normalized);
             if (errors.length) throw new RangeError(errors.join('；'));
             this.protocol = normalized;
-            this.matchedStage = null;
-            this.matchedCount = 0;
+            this.reset();
             return this.protocol;
         }
 
@@ -359,6 +405,7 @@
             this.inputEpochLength = Math.round(this.inputRateHz * this.epochSeconds);
             this.modelEpochLength = Math.round(this.modelRateHz * this.epochSeconds);
             this.maxAbsUv = Number(options.maxAbsUv || 500);
+            this.qualityMaxSamples = Math.max(256, Math.floor(Number(options.qualityMaxSamples) || 4096));
             this.reset();
         }
 
@@ -385,7 +432,11 @@
             const rawEpoch = this.current.splice(0, this.inputEpochLength);
             const epochGapSamples = this.currentGapSamples;
             this.currentGapSamples = 0;
-            const quality = qualityMetrics(rawEpoch, { maxAbsUv: this.maxAbsUv, sampleRateHz: this.inputRateHz });
+            const quality = qualityMetrics(rawEpoch, {
+                maxAbsUv: this.maxAbsUv,
+                sampleRateHz: this.inputRateHz,
+                maxSamples: this.qualityMaxSamples,
+            });
             if (epochGapSamples) {
                 quality.ok = false;
                 quality.reason = 'sample_gap';
@@ -418,6 +469,7 @@
             this.epochs.forEach((epoch, index) => eeg.set(epoch, index * this.modelEpochLength));
             const centerIndex = this.totalEpochs - Math.floor(this.temporalContext / 2) - 1;
             const features = temporalFeatures(centerIndex, this.temporalContext);
+            const contextQualityOk = this.qualities.length === this.temporalContext && this.qualities.every(quality => quality.ok);
             return {
                 eeg,
                 epochIndex: features.epochIndex,
@@ -430,8 +482,10 @@
                 modelDelayEpochs: Math.floor(this.temporalContext / 2),
                 modelDelaySeconds: Math.floor(this.temporalContext / 2) * this.epochSeconds,
                 controlEligible: false,
+                controlEligibilityReason: 'retrospective_center_output',
                 centerQuality: this.qualities[Math.floor(this.temporalContext / 2)],
                 targetQuality: this.qualities[Math.floor(this.temporalContext / 2)],
+                contextQualityOk,
                 historyEpochs: this.epochs.length,
             };
         }
@@ -449,6 +503,10 @@
             });
             const latestIndex = this.totalEpochs - 1;
             const features = causalTemporalFeatures(latestIndex, this.temporalContext);
+            const fullContext = this.epochs.length === this.temporalContext;
+            const contextQualityOk = fullContext
+                && this.qualities.length === this.temporalContext
+                && this.qualities.every(quality => quality.ok);
             return {
                 eeg,
                 epochIndex: features.epochIndex,
@@ -460,10 +518,16 @@
                 inferenceMode: 'causal',
                 modelDelayEpochs: 0,
                 modelDelaySeconds: 0,
-                // The currently exported model was trained with bidirectional
-                // context; causal output is retained for diagnostics only.
-                controlEligible: false,
+                // The model keeps the same 21-epoch tensor shape, but this latest-
+                // epoch output has no future context. It is therefore exposed as
+                // an explicitly opt-in experimental control candidate only after
+                // a full, quality-passing context is available.
+                controlEligible: fullContext && contextQualityOk,
+                controlEligibilityReason: !fullContext
+                    ? 'insufficient_context'
+                    : (contextQualityOk ? 'causal_latest_epoch' : 'context_quality'),
                 targetQuality: this.qualities[this.qualities.length - 1],
+                contextQualityOk,
                 historyEpochs: this.epochs.length,
             };
         }
@@ -474,6 +538,8 @@
         DEFAULT_STIMULUS_PROTOCOL,
         normalizeStimulusProtocol,
         validateStimulusProtocol,
+        normalizeProbabilities,
+        SleepStageSmoother,
         lightStimulusPresentation,
         SleepStageStimulusGate,
         resampleLinear,

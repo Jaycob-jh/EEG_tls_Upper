@@ -227,6 +227,7 @@ body.analysis-window-body { background: var(--bg); }
 .stage-probability > div { height: 9px; background: #e6edf2; overflow: hidden; border-radius: 999px; }
 .stage-probability i { display: block; height: 100%; width: 0; background: var(--blue); border-radius: inherit; transition: width .2s ease; }
 .stage-probability strong { text-align: right; font-variant-numeric: tabular-nums; }
+.stage-source { display: block; margin-top: 2px; color: var(--muted); font-size: 9px; line-height: 1.2; }
 
 @media (max-width: 1250px) {
     .analysis-metrics { grid-template-columns: repeat(3,minmax(0,1fr)); }

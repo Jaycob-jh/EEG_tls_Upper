@@ -396,7 +396,10 @@ test('realtime page exposes a 30-second sleep-stage stimulus protocol with safet
     assert.match(app, /function renderLightStimulusState\(\)/);
     assert.match(app, /lightStateVerified/);
     assert.match(app, /sleepEpochLightChannels/);
-    assert.match(html, /完成约 10\.5 分钟数据后开始训练一致的中心输出，之后每 30 秒更新一次/);
+    assert.match(app, /onlineInferenceInput\(\)/);
+    assert.match(app, /sleepInferenceGeneration/);
+    assert.match(html, /当前因果候选从首个 epoch 开始显示/);
+    assert.match(html, /闭环只接受当前因果候选/);
 });
 
 test('user-visible product name is Cao Cao while the historical data directory stays compatible', () => {

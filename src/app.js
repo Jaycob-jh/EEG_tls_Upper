@@ -75,6 +75,8 @@
         sleepModelFilter: null,
         sleepModelReady: false,
         sleepInferencePromise: Promise.resolve(),
+        sleepInferenceGeneration: 0,
+        sleepProbabilitySmoothers: { center: null, causal: null },
         sleepHistory: [],
         sleepStimulusProtocol: loadSleepStimulusProtocol(),
         sleepStimulusGate: null,
@@ -275,8 +277,12 @@
     }
 
     function resetRealtimeSleep(clearHistory = true) {
+        state.sleepInferenceGeneration += 1;
+        state.sleepInferencePromise = Promise.resolve();
         state.sleepPipeline?.reset();
         state.sleepModelFilter?.reset();
+        state.sleepStimulusGate?.reset();
+        Object.values(state.sleepProbabilitySmoothers).forEach(smoother => smoother?.reset());
         state.sleepEpochLightChannels.clear();
         if (clearHistory) state.sleepHistory = [];
         $('realtime-epoch').textContent = '0 epoch';
@@ -292,7 +298,7 @@
 
     function renderSleepHistory() {
         $('realtime-history').innerHTML = state.sleepHistory.length ? state.sleepHistory.map(item => `<tr>
-            <td>${escapeHtml(item.outputTime)}</td><td>${item.epochIndex + 1}</td><td><span class="state-badge ${item.quality.ok ? '' : 'off'}">${escapeHtml(item.stage)}</span></td>
+            <td>${escapeHtml(item.outputTime)}</td><td>${item.epochIndex + 1}</td><td title="${item.inferenceMode === 'causal' ? '当前因果输出，用于实验性闭环候选' : '训练一致中心输出，用于回顾性验证'}"><span class="state-badge ${item.quality.ok ? '' : 'off'}">${escapeHtml(item.stage)}</span><small class="stage-source">${item.inferenceMode === 'causal' ? '当前候选' : '中心验证'}</small></td>
             <td>${(item.confidence * 100).toFixed(1)}%</td><td>${item.quality.ok ? '通过' : escapeHtml(item.quality.reason)}</td>
             <td>${item.stimulusShadow ? '验证命中（未发光）' : (item.lightChannels?.length ? `CH${item.lightChannels.join('、CH')} 开启` : '关闭')}</td>
             ${item.probabilities.map(value => `<td>${(value * 100).toFixed(1)}%</td>`).join('')}
@@ -434,15 +440,32 @@
             setSleepStimulusStatus('已启用 · 等待设备连接并启动 EEG');
             return;
         }
+        if (item.inferenceMode !== 'causal') {
+            setSleepStimulusStatus('已启用 · 中心输出仅作回顾性验证，等待当前因果候选');
+            return;
+        }
         if (item.controlEligible !== true) {
-            const delay = Number(item.modelDelaySeconds) > 0 ? `约 ${Math.round(item.modelDelaySeconds / 60)} 分钟延迟` : '当前模型时序未验证';
-            setSleepStimulusStatus(`训练一致输出 · 仅显示/验证 · 暂不触发光刺激（${delay}）`);
+            const reason = item.controlEligibilityReason === 'insufficient_context'
+                ? '尚未收满 21 个 epoch'
+                : (item.controlEligibilityReason === 'context_quality' ? '21 个 epoch 中存在质量警告' : '当前因果时序未满足');
+            setSleepStimulusStatus(`当前因果候选暂不触发 · ${reason}`);
             await audit('sleep_stimulus_control_blocked', {
                 epochIndex: item.epochIndex,
                 stage: item.stage,
                 inferenceMode: item.inferenceMode,
                 modelDelaySeconds: item.modelDelaySeconds,
+                controlEligibilityReason: item.controlEligibilityReason,
                 reason: 'model_output_not_control_eligible',
+            });
+            return;
+        }
+        if (!state.lightStateVerified) {
+            setSleepStimulusStatus('已启用 · 等待设备状态回读确认');
+            await audit('sleep_stimulus_control_blocked', {
+                epochIndex: item.epochIndex,
+                stage: item.stage,
+                inferenceMode: item.inferenceMode,
+                reason: 'device_state_not_verified',
             });
             return;
         }
@@ -475,6 +498,7 @@
             stimulus_active: '刺激进行中',
             cooldown: '冷却中',
             duplicate_epoch: '已忽略重复 epoch',
+            context_quality: '上下文质量未通过',
         };
         if (decision.reason === 'awaiting_consecutive') {
             setSleepStimulusStatus(`${decision.stage} 连续命中 ${decision.matchedCount} / ${decision.requiredCount}`);
@@ -483,21 +507,33 @@
         }
     }
 
-    async function inferSleepEpoch(input) {
+    async function inferSleepEpoch(input, generation = state.sleepInferenceGeneration) {
         if (!state.sleepModelReady) return;
         $('realtime-inference-state').textContent = `正在推理 epoch ${input.classifiedEpochIndex + 1}…`;
         try {
             const result = await window.desktopAPI.inferSleepStage(input);
-            const confidence = Math.max(...result.probabilities);
-            const stage = Sleep.STAGES[result.stage] || `Stage ${result.stage}`;
+            if (generation !== state.sleepInferenceGeneration) return;
+            const inferenceMode = input.inferenceMode || 'unknown';
+            const smoother = state.sleepProbabilitySmoothers[inferenceMode];
+            const smoothed = smoother ? smoother.update(result.probabilities) : {
+                probabilities: result.probabilities,
+                stageIndex: result.stage,
+                confidence: Math.max(...result.probabilities),
+                margin: null,
+                rawProbabilities: result.probabilities,
+            };
+            const confidence = smoothed.confidence;
+            const stage = Sleep.STAGES[smoothed.stageIndex] || `Stage ${smoothed.stageIndex}`;
             const targetQuality = input.targetQuality || input.centerQuality || { ok: false, reason: 'missing_quality' };
             const delaySeconds = Number(input.modelDelaySeconds) || 0;
-            const inferenceMode = input.inferenceMode || 'unknown';
             const item = {
                 outputTime: formatTime(), epochIndex: input.classifiedEpochIndex, stage, confidence,
-                probabilities: result.probabilities, quality: targetQuality,
+                probabilities: smoothed.probabilities, rawProbabilities: Array.from(result.probabilities, Number),
+                rawStage: Sleep.STAGES[result.stage] || `Stage ${result.stage}`,
+                probabilityMargin: smoothed.margin, quality: targetQuality,
                 inferenceMode, modelDelaySeconds: delaySeconds,
                 controlEligible: input.controlEligible === true,
+                controlEligibilityReason: input.controlEligibilityReason,
                 lightChannels: Array.from(input.lightChannels || []),
             };
             state.sleepHistory.unshift(item);
@@ -505,21 +541,24 @@
             $('realtime-stage').textContent = targetQuality.ok ? stage : `${stage}（质量警告）`;
             $('realtime-stage-time').textContent = inferenceMode === 'center'
                 ? `目标 epoch ${input.classifiedEpochIndex + 1} · 中心输出 · 约 ${Math.round(delaySeconds / 60)} 分钟延迟`
-                : `目标 epoch ${input.classifiedEpochIndex + 1} · 每 30 秒更新`;
+                : `目标 epoch ${input.classifiedEpochIndex + 1} · 当前因果输出 · 每 30 秒更新`;
             $('realtime-inference-state').textContent = inferenceMode === 'center'
-                ? `完成 · 中心输出 ${result.selectedOutputIndex + 1}/${input.temporalContext} · 仅显示/验证`
-                : `完成 · 输出 ${result.selectedOutputIndex + 1}/${input.temporalContext}`;
-            renderSleepProbabilities(result.probabilities);
+                ? `完成 · 中心输出 ${result.selectedOutputIndex + 1}/${input.temporalContext} · 回顾性验证`
+                : `完成 · 当前输出 ${result.selectedOutputIndex + 1}/${input.temporalContext} · 实验性闭环候选`;
+            renderSleepProbabilities(smoothed.probabilities);
             renderSleepHistory();
             await audit('sleep_stage_inferred', {
                 epochIndex: input.classifiedEpochIndex, stage, confidence,
-                probabilities: result.probabilities, quality: targetQuality,
+                probabilities: smoothed.probabilities, rawProbabilities: item.rawProbabilities,
+                rawStage: item.rawStage, probabilityMargin: smoothed.margin, quality: targetQuality,
                 outputIndex: result.selectedOutputIndex, historyEpochs: input.historyEpochs,
                 lightChannels: item.lightChannels, inferenceMode,
                 modelDelaySeconds: delaySeconds, controlEligible: item.controlEligible,
+                controlEligibilityReason: item.controlEligibilityReason,
             });
             await handleSleepStimulusResult(item);
         } catch (error) {
+            if (generation !== state.sleepInferenceGeneration) return;
             $('realtime-model').textContent = '模型错误';
             $('realtime-model-detail').textContent = error.message;
             $('realtime-inference-state').textContent = '推理失败';
@@ -553,20 +592,34 @@
             $('realtime-inference-state').textContent = `检测到序列缺口，跳过第 ${epoch.totalEpochs} 个 epoch`;
             return;
         }
-        $('realtime-inference-state').textContent = '等待训练一致中心窗口';
+        $('realtime-inference-state').textContent = '等待中心验证与当前因果候选';
         // 中心输出对应约 5 分钟前的目标 epoch，当前 epoch 的光刺激状态不能
-        // 反写到历史目标 epoch；中心模型结果也不会直接触发刺激。
-        const input = state.sleepPipeline.inferenceInput();
+        // 反写到历史目标 epoch；只有当前因果候选在完整、质量通过的 21 epoch
+        // 上才具备实验性闭环资格。
+        const lightChannels = Array.from(state.sleepEpochLightChannels);
         state.sleepEpochLightChannels.clear();
-        if (input) {
-            input.lightChannels = [];
-            state.sleepInferencePromise = state.sleepInferencePromise.then(() => inferSleepEpoch(input));
+        const generation = state.sleepInferenceGeneration;
+        const centerInput = state.sleepPipeline.inferenceInput();
+        const causalInput = state.sleepPipeline.onlineInferenceInput();
+        if (centerInput) {
+            centerInput.lightChannels = [];
+            state.sleepInferencePromise = state.sleepInferencePromise
+                .then(() => inferSleepEpoch(centerInput, generation));
+        }
+        if (causalInput) {
+            causalInput.lightChannels = lightChannels;
+            state.sleepInferencePromise = state.sleepInferencePromise
+                .then(() => inferSleepEpoch(causalInput, generation));
         }
     }
 
     async function setupRealtimeSleep() {
         if (!Sleep) throw new Error('实时睡眠分析模块加载失败');
         state.sleepPipeline = new Sleep.RealtimeSleepPipeline({ inputRateHz: 250, modelRateHz: 100, epochSeconds: 30, temporalContext: 21 });
+        state.sleepProbabilitySmoothers = {
+            center: new Sleep.SleepStageSmoother({ alpha: 0.5 }),
+            causal: new Sleep.SleepStageSmoother({ alpha: 0.5 }),
+        };
         state.sleepStimulusGate = new Sleep.SleepStageStimulusGate(state.sleepStimulusProtocol);
         renderSleepStimulusProtocol();
         $('realtime-enabled').checked = state.realtimeEnabled;
@@ -599,7 +652,7 @@
             const info = await window.desktopAPI.getSleepModelInfo();
             state.sleepModelReady = true;
             $('realtime-model').textContent = '已就绪';
-            $('realtime-model-detail').textContent = `Stage-1 ONNX · 训练一致滤波/重采样 · 中心输出约延迟 5 分钟`;
+            $('realtime-model-detail').textContent = `Stage-1 ONNX · 中心验证 + 当前因果候选 · 概率平滑`;
         } catch (error) {
             state.sleepModelReady = false;
             $('realtime-model').textContent = '不可用';
