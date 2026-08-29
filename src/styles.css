@@ -81,6 +81,7 @@ button { cursor: pointer; }
 .section-heading.compact { padding: 13px 15px; }
 .section-heading.page-heading { padding: 0 0 18px; border: 0; }
 .section-heading.page-heading h2 { font-size: 21px; }
+.page-heading-note { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; font-weight: 500; }
 .inline-controls label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
 .wave-panel .inline-controls { flex-wrap: wrap; justify-content: flex-end; }
 #wave-x-range, #wave-refresh-rate { min-width: 82px; }
@@ -133,8 +134,13 @@ input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb
     .wave-canvas-wrap { height: clamp(560px, 52vh, 620px); }
 }
 
+html.analysis-window-html, body.analysis-window-body { min-height: 100%; height: auto; overflow: auto; }
+body.analysis-window-body { background: var(--bg); }
+.analysis-window-content { min-height: 100vh; padding: 0 20px 24px; }
+.analysis-window-content .analysis-heading { position: sticky; top: 0; z-index: 5; align-items: end; padding: 16px 0 14px; background: rgba(237,242,246,.96); border-bottom: 1px solid var(--border); backdrop-filter: blur(8px); }
+.analysis-window-content .analysis-heading > div:first-child { min-width: 180px; }
 .analysis-heading { align-items: end; }
-.analysis-actions { display: flex; align-items: center; gap: 8px; }
+.analysis-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .analysis-actions select { min-width: 310px; max-width: 460px; }
 .analysis-progress { margin: 0 0 12px; display: grid; grid-template-columns: 160px minmax(0,1fr); align-items: center; gap: 12px; color: var(--muted); font-size: 11px; }
 .analysis-progress[hidden] { display: none; }
@@ -316,4 +322,8 @@ input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb
     .debug-grid { grid-template-columns: 1fr; }.protocol-log-section { grid-column: auto; }
     .form-grid.three { grid-template-columns: 1fr; }
     .form-grid.four { grid-template-columns: 1fr; }
+    .analysis-window-content { padding-left: 10px; padding-right: 10px; }
+    .analysis-window-content .analysis-heading { align-items: flex-start; }
+    .analysis-window-content .analysis-actions { width: 100%; justify-content: flex-start; }
+    .analysis-window-content .analysis-actions select { min-width: 0; flex: 1 1 180px; }
 }

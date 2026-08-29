@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN" class="analysis-window-html">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>曹操 · EEG 分析</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="analysis-window-body">
+    <main class="analysis-window-content">
+        <div class="section-heading page-heading analysis-heading">
+            <div>
+                <p class="eyebrow">OFFLINE EEG ANALYSIS</p>
+                <h2 id="analysis-dialog-title">脑电数据分析</h2>
+                <small class="page-heading-note">分析结果仅用于研究和数据质量评估；此窗口可与主界面并行操作</small>
+            </div>
+            <div class="analysis-actions">
+                <select id="analysis-session-select" aria-label="选择采集记录"><option value="">请选择采集记录</option></select>
+                <button class="button primary" id="analysis-open-button">开始分析</button>
+                <button class="button secondary" id="analysis-yasa-button" disabled>YASA 离线复核</button>
+                <button class="button secondary" id="analysis-export-button" disabled>导出报告</button>
+                <button class="icon-button" type="button" id="analysis-dialog-close" aria-label="关闭分析窗口" title="关闭">×</button>
+            </div>
+        </div>
+
+        <div class="analysis-progress" id="analysis-progress" hidden><span id="analysis-progress-label">准备分析…</span><div><i id="analysis-progress-bar"></i></div></div>
+        <div class="notice analysis-disclaimer">仅用于研究和数据质量评估，不构成医疗诊断，也不等同于正式睡眠分期。</div>
+
+        <div class="analysis-empty" id="analysis-empty">从已有采集记录中选择一个会话开始分析。</div>
+        <div class="analysis-workspace" id="analysis-workspace" hidden>
+            <div class="analysis-metrics" id="analysis-kpis"></div>
+            <section class="analysis-section yasa-section">
+                <div class="section-heading compact">
+                    <div><p class="eyebrow">YASA OFFLINE VALIDATION</p><h3>YASA 离线睡眠分期复核</h3></div>
+                    <span class="analysis-yasa-state" id="analysis-yasa-state">尚未运行</span>
+                </div>
+                <div class="analysis-yasa-summary" id="analysis-yasa-summary">
+                    选择采集记录后，点击右上角“YASA 离线复核”运行独立分期。
+                </div>
+                <div class="analysis-table-wrap"><table class="analysis-table"><thead><tr><th>分期</th><th>Epoch 数</th><th>时长</th><th>占比</th></tr></thead><tbody id="analysis-yasa-stage-body"><tr><td colspan="4"><div class="empty-state">尚未生成 YASA 结果</div></td></tr></tbody></table></div>
+                <div class="analysis-warnings" id="analysis-yasa-warnings" hidden></div>
+                <div class="analysis-yasa-files" id="analysis-yasa-files"></div>
+            </section>
+
+            <section class="analysis-wave-panel">
+                <div class="section-heading compact">
+                    <div><p class="eyebrow">INTERACTIVE WAVEFORM</p><h3 id="analysis-wave-title">离线 EEG 波形</h3></div>
+                    <div class="segmented" id="analysis-source-toggle">
+                        <button type="button" class="active" data-source="filtered">滤波后</button>
+                        <button type="button" data-source="raw">原始</button>
+                    </div>
+                </div>
+                <div class="analysis-canvas-wrap"><canvas id="analysis-canvas"></canvas><div class="canvas-loading" id="analysis-canvas-loading" hidden>加载视窗…</div></div>
+                <div class="wave-footer"><span id="analysis-window-label">--</span><span>滚轮缩放 X · Ctrl+滚轮缩放 Y · 右键拖动 · 双击复位</span><span id="analysis-cursor-label">-- µV</span></div>
+            </section>
+
+            <section class="analysis-wave-panel spectrogram-panel">
+                <div class="section-heading compact">
+                    <div><p class="eyebrow">TIME–FREQUENCY ANALYSIS</p><h3>离线时频图</h3></div>
+                    <div class="spectrogram-controls">
+                        <label>窗长<select id="spectrogram-window"><option value="1">1 秒</option><option value="2" selected>2 秒</option><option value="4">4 秒</option></select></label>
+                        <label>最高频率<select id="spectrogram-max-hz"><option value="30">30 Hz</option><option value="45" selected>45 Hz</option><option value="60">60 Hz</option></select></label>
+                        <button type="button" class="button secondary" id="spectrogram-refresh">重新计算</button>
+                    </div>
+                </div>
+                <div class="spectrogram-canvas-wrap"><canvas id="spectrogram-canvas"></canvas><div class="canvas-loading" id="spectrogram-loading" hidden>计算时频图…</div></div>
+                <div class="wave-footer"><span id="spectrogram-detail">STFT · Hann 窗 · 75% 重叠</span><span>颜色表示功率谱密度（dB/Hz）</span><span id="spectrogram-cursor">--</span></div>
+            </section>
+
+            <div class="analysis-detail-grid">
+                <section class="analysis-section">
+                    <div class="section-heading compact"><div><p class="eyebrow">SIGNAL QUALITY</p><h3>数据质量</h3></div></div>
+                    <div class="analysis-table-wrap"><table class="analysis-table"><tbody id="analysis-quality-body"></tbody></table></div>
+                </section>
+                <section class="analysis-section">
+                    <div class="section-heading compact"><div><p class="eyebrow">BAND POWER</p><h3>全记录频带功率</h3></div></div>
+                    <div class="analysis-table-wrap"><table class="analysis-table"><thead><tr><th>频带</th><th>绝对功率</th><th>相对功率</th></tr></thead><tbody id="analysis-band-body"></tbody></table></div>
+                </section>
+            </div>
+
+            <section class="analysis-section">
+                <div class="section-heading compact">
+                    <div><p class="eyebrow">STIMULATION PHASES</p><h3>光刺激前 / 中 / 后</h3></div>
+                    <div class="button-row"><button type="button" class="button secondary" id="analysis-add-segment">添加区间</button><button type="button" class="button primary" id="analysis-apply-segments">重新计算</button></div>
+                </div>
+                <div class="analysis-segments" id="analysis-segments"></div>
+                <div class="analysis-table-wrap"><table class="analysis-table"><thead><tr><th>区间</th><th>阶段</th><th>时长</th><th>RMS</th><th>稳健幅度</th><th>Delta</th><th>Theta</th><th>Alpha</th><th>Beta</th><th>Gamma</th><th>39–41Hz</th></tr></thead><tbody id="analysis-phase-body"></tbody></table></div>
+            </section>
+            <div class="analysis-warnings" id="analysis-warnings" hidden></div>
+        </div>
+    </main>
+
+    <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+    <script src="analysis-ui.js"></script>
+    <script src="analysis-window.js"></script>
+</body>
+</html>

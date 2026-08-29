@@ -1464,7 +1464,6 @@
 
     async function loadSessions() {
         state.sessions = await window.desktopAPI.listSessions();
-        window.BrainLumeAnalysisUi?.setSessions(state.sessions);
         const body = $('record-list');
         if (!state.sessions.length) {
             body.innerHTML = '<tr><td colspan="7"><div class="empty-state">暂无采集记录</div></td></tr>';
@@ -1488,7 +1487,7 @@
     function setupNavigation() {
         const titles = {
             device: ['DEVICE WORKSPACE', '设备总览'],
-            records: ['RAW DATA ARCHIVE', '采集记录'], analysis: ['OFFLINE EEG ANALYSIS', '脑电数据分析'],
+            records: ['RAW DATA ARCHIVE', '采集记录'],
             realtime: ['REALTIME SLEEP STAGING', '实时预处理与睡眠分期'],
             debug: ['ENGINEERING TOOLS', '设备调试'],
         };
@@ -1520,8 +1519,8 @@
     function setupEvents() {
         $('connect-button').addEventListener('click', () => runUiTask(connectBle));
         $('screenshot-button').addEventListener('click', () => runUiTask(async () => {
-            const file = await window.desktopAPI.saveScreenshot();
-            if (file) toast(`截图已保存：${file}`);
+            const file = await window.desktopAPI.saveScreenshot($('page-title').textContent || '当前页面');
+            if (file) toast(`当前页面截图已保存：${file}`);
         }));
         $('indicator-toggle-button').addEventListener('click', () => runUiTask(toggleIndicator));
         $('wave-x-range').addEventListener('change', event => {
@@ -1628,9 +1627,8 @@
         $('record-list').addEventListener('click', event => {
             const analyze = event.target.closest('.analyze-session');
             if (analyze) {
-                window.BrainLumeAnalysisUi.navigateToAnalysis();
-                $('analysis-session-select').value = analyze.dataset.sessionId;
-                window.BrainLumeAnalysisUi.openSession(analyze.dataset.sessionId).catch(() => {});
+                window.desktopAPI.openAnalysisWindow(analyze.dataset.sessionId)
+                    .catch(error => toast(error.message, 'error'));
                 return;
             }
             const button = event.target.closest('.reveal-session');
@@ -1804,7 +1802,6 @@
     async function init() {
         if (!SDK || !Core || !Sleep) throw new Error('BrainLume SDK 或实时分析模块加载失败');
         populateChannelSelects();
-        window.BrainLumeAnalysisUi?.init();
         setupNavigation();
         setupBleChooser();
         setupEvents();

@@ -55,9 +55,31 @@
         if (state.sessions.some(session => session.id === selected)) $('analysis-session-select').value = selected;
     }
 
-    function navigateToAnalysis() {
-        const button = document.querySelector('.nav-item[data-page="analysis"]');
-        if (button) button.click();
+    function showAnalysisDialog() {
+        window.focus();
+    }
+
+    async function closeAnalysisDialog() {
+        const dialog = $('analysis-dialog');
+        const analysisId = state.analysisId;
+        state.analysisId = null;
+        state.summary = null;
+        state.viewport = null;
+        state.spectrogram = null;
+        state.yasa = null;
+        state.yasaRunning = false;
+        state.requestSerial += 1;
+        state.spectrogramSerial += 1;
+        if (analysisId) await window.desktopAPI.closeAnalysis(analysisId).catch(() => {});
+        $('analysis-workspace').hidden = true;
+        $('analysis-empty').hidden = false;
+        $('analysis-empty').textContent = '从采集记录中选择一个会话开始分析。';
+        $('analysis-export-button').disabled = true;
+        $('analysis-yasa-button').disabled = true;
+        setLoading(false);
+        if (dialog?.open) dialog.close();
+        document.body.classList.remove('analysis-dialog-open');
+        if (window.desktopAPI.closeAnalysisWindow) await window.desktopAPI.closeAnalysisWindow().catch(() => {});
     }
 
     async function openSession(sessionId) {
@@ -90,12 +112,20 @@
             setLoading(false);
             await requestViewport();
             await requestSpectrogram();
+            return result;
         } catch (error) {
             setLoading(false);
             $('analysis-empty').textContent = `分析失败：${error.message}`;
             toast(error.message, true);
             throw error;
         }
+    }
+
+    async function openForSession(sessionId) {
+        if (!sessionId) throw new Error('请先选择一条采集记录');
+        showAnalysisDialog();
+        $('analysis-session-select').value = sessionId;
+        return openSession(sessionId);
     }
 
     function renderSummary() {
@@ -451,6 +481,17 @@
 
     function setupEvents() {
         $('analysis-open-button').addEventListener('click',()=>openSession($('analysis-session-select').value).catch(()=>{}));
+        $('analysis-dialog-close').addEventListener('click',()=>closeAnalysisDialog().catch(error=>toast(error.message,true)));
+        const dialog = $('analysis-dialog');
+        if (dialog) {
+            dialog.addEventListener('cancel', event => {
+                event.preventDefault();
+                closeAnalysisDialog().catch(error=>toast(error.message,true));
+            });
+            dialog.addEventListener('click', event => {
+                if (event.target === dialog) closeAnalysisDialog().catch(error=>toast(error.message,true));
+            });
+        }
         $('analysis-yasa-button').addEventListener('click',()=>runYasaStaging().catch(()=>{}));
         $('analysis-export-button').addEventListener('click',async()=>{try{setLoading(true,'生成 PDF 与数据附件…',92);const result=await window.desktopAPI.exportAnalysisReport(state.analysisId);if(result)toast(`报告已导出：${result.pdfPath}`);}catch(error){toast(error.message,true);}finally{setLoading(false);}});
         $('analysis-source-toggle').addEventListener('click',event=>{const button=event.target.closest('[data-source]');if(!button||button.dataset.source===state.source)return;state.source=button.dataset.source;renderSummary();requestViewport();requestSpectrogram();});
@@ -459,7 +500,7 @@
         $('analysis-apply-segments').addEventListener('click',()=>applySegments().catch(error=>toast(error.message,true)));
         setupCanvas();
         setupSpectrogram();
-        window.desktopAPI.onAnalysisProgress(progress=>{if(!state.analysisId||progress.analysisId===state.analysisId||!state.summary)setLoading(true,progress.detail||progress.phase,progress.percent);});
+        window.desktopAPI.onAnalysisProgress(progress=>{if(!state.analysisId||progress.analysisId!==state.analysisId)return;setLoading(true,progress.detail||progress.phase,progress.percent);});
     }
 
     function init() {
@@ -467,5 +508,5 @@
         state.initialized=true;setupEvents();
     }
 
-    window.BrainLumeAnalysisUi = Object.freeze({ init, setSessions, openSession, navigateToAnalysis });
+    window.BrainLumeAnalysisUi = Object.freeze({ init, setSessions, openSession, openForSession, closeAnalysisDialog });
 }());

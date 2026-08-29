@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, dialog, ipcMain, shell, session } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell, session, Menu } = require('electron');
 const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
@@ -19,6 +19,7 @@ app.setPath('userData', path.join(app.getPath('appData'), 'brainlume-desktop'));
 
 let mainWindow = null;
 let splashWindow = null;
+let analysisWindow = null;
 let pendingBluetoothSelection = null;
 let bluetoothCandidates = new Map();
 let bluetoothSelectionTimer = null;
@@ -30,6 +31,34 @@ const debugCliMode = process.argv.includes('--debug-cli');
 const debugCommandArg = process.argv.find(value => value.startsWith('--debug-command='));
 const debugCommand = debugCommandArg ? JSON.parse(Buffer.from(debugCommandArg.slice('--debug-command='.length), 'base64').toString('utf8')) : null;
 if (debugCliMode) app.disableHardwareAcceleration();
+
+function configureApplicationMenu() {
+    const template = [];
+    if (process.platform === 'darwin') {
+        template.push({
+            label: app.name,
+            submenu: [
+                { role: 'about', label: '关于曹操' },
+                { type: 'separator' },
+                { role: 'quit', label: '退出曹操' },
+            ],
+        });
+    }
+    template.push({
+        label: '文件',
+        submenu: [
+            { label: '打开数据目录', click: () => { void openDataDirectory('root'); } },
+            { label: '打开会话目录', click: () => { void openDataDirectory('sessions'); } },
+            { label: '打开日志目录', click: () => { void openDataDirectory('logs'); } },
+            { type: 'separator' },
+            { label: '导出当前分析报告', click: () => { void exportCurrentAnalysisFromMenu(); } },
+            { label: '保存当前页面截图', click: () => { void saveFocusedScreenshotFromMenu(); } },
+            { type: 'separator' },
+            { role: 'quit', label: '退出' },
+        ],
+    });
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
 
 function nowIso(date = new Date()) {
     return Core.formatLocalIso(date);
@@ -46,6 +75,13 @@ function localFileStamp(date = new Date()) {
 
 function safeFilePart(value) {
     return String(value || 'session').replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 80);
+}
+
+function screenshotFilePart(value) {
+    return String(value || '当前页面')
+        .replace(/[<>:"/\\|?*\u0000-\u001F]+/g, '_')
+        .replace(/\s+/g, '_')
+        .slice(0, 60) || '当前页面';
 }
 
 function appDataPaths() {
@@ -192,6 +228,106 @@ function createWindow() {
         if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
         mainWindow = null;
     });
+}
+
+function getFocusedAppWindow() {
+    const focused = BrowserWindow.getFocusedWindow();
+    if (focused && (focused === mainWindow || focused === analysisWindow)) return focused;
+    return mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+}
+
+async function openDataDirectory(kind) {
+    try {
+        const paths = await ensureDataDirectories();
+        const directory = paths[kind];
+        if (!directory) throw new Error('未定义的应用目录');
+        const error = await shell.openPath(directory);
+        if (error) throw new Error(error);
+    } catch (error) {
+        dialog.showErrorBox('打开目录失败', error.message);
+    }
+}
+
+function analysisIdsForWindow(window) {
+    if (!window || window.isDestroyed()) return [];
+    const webContentsId = window.webContents.id;
+    return Array.from(activeAnalyses.values())
+        .filter(entry => entry.webContentsId === webContentsId)
+        .map(entry => entry.id);
+}
+
+async function exportCurrentAnalysisFromMenu() {
+    try {
+        const focused = getFocusedAppWindow();
+        const analysisId = analysisIdsForWindow(focused)[0] || Array.from(activeAnalyses.keys()).at(-1);
+        if (!analysisId) throw new Error('请先从“记录”打开一条采集记录进行分析');
+        await exportAnalysisReport(analysisId);
+    } catch (error) {
+        dialog.showErrorBox('导出分析报告失败', error.message);
+    }
+}
+
+async function saveFocusedScreenshotFromMenu() {
+    try {
+        const target = getFocusedAppWindow();
+        if (!target) throw new Error('当前没有可截图的应用窗口');
+        const pageTitle = target === analysisWindow
+            ? '脑电数据分析'
+            : await target.webContents.executeJavaScript("document.querySelector('.topbar h1')?.textContent || document.title || '当前页面'");
+        await saveScreenshotForWindow(target, pageTitle);
+    } catch (error) {
+        dialog.showErrorBox('保存截图失败', error.message);
+    }
+}
+
+async function openAnalysisWindow(sessionId) {
+    if (!mainWindow || mainWindow.isDestroyed()) throw new Error('主窗口尚未就绪');
+    const analysisHtml = path.join(__dirname, 'src', 'analysis.html');
+    if (analysisWindow && !analysisWindow.isDestroyed()) {
+        for (const analysisId of analysisIdsForWindow(analysisWindow)) await closeAnalysis(analysisId);
+        await analysisWindow.loadFile(analysisHtml, { query: { sessionId: String(sessionId || '') } });
+        analysisWindow.show();
+        analysisWindow.focus();
+        return true;
+    }
+
+    const windowRef = new BrowserWindow({
+        parent: mainWindow,
+        modal: false,
+        show: false,
+        width: 1380,
+        height: 900,
+        minWidth: 960,
+        minHeight: 680,
+        backgroundColor: '#edf2f6',
+        title: '曹操 · EEG 分析',
+        icon: APP_ICON_PATH,
+        webPreferences: {
+            preload: path.join(__dirname, 'analysis-preload.js'),
+            contextIsolation: true,
+            nodeIntegration: false,
+            backgroundThrottling: false,
+        },
+    });
+    analysisWindow = windowRef;
+    const ownerWebContentsId = windowRef.webContents.id;
+    windowRef.on('closed', () => {
+        const ids = Array.from(activeAnalyses.values())
+            .filter(entry => entry.webContentsId === ownerWebContentsId)
+            .map(entry => entry.id);
+        if (analysisWindow === windowRef) analysisWindow = null;
+        void Promise.all(ids.map(id => closeAnalysis(id).catch(() => {})));
+    });
+    try {
+        await windowRef.loadFile(analysisHtml, { query: { sessionId: String(sessionId || '') } });
+        windowRef.show();
+        windowRef.focus();
+        return true;
+    } catch (error) {
+        if (!windowRef.isDestroyed()) windowRef.destroy();
+        if (analysisWindow === windowRef) analysisWindow = null;
+        throw error;
+    }
 }
 
 function createDebugWindow() {
@@ -443,7 +579,15 @@ async function closeAnalysis(analysisId) {
     return true;
 }
 
-async function openAnalysis(sessionId) {
+function sendAnalysisProgress(entry, message) {
+    const targets = [];
+    const owner = BrowserWindow.getAllWindows().find(window => window.webContents.id === entry.webContentsId);
+    if (owner && !owner.isDestroyed()) targets.push(owner);
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow !== owner) targets.push(mainWindow);
+    for (const target of targets) target.webContents.send('analysis:progress', { analysisId: entry.id, ...message });
+}
+
+async function openAnalysis(sessionId, ownerWebContentsId = null) {
     const sessions = await listSessions();
     const selected = sessions.find(item => item.id === sessionId);
     if (!selected) throw new Error('未找到指定采集会话');
@@ -454,11 +598,11 @@ async function openAnalysis(sessionId) {
     for (const id of Array.from(activeAnalyses.keys())) await closeAnalysis(id);
     const analysisId = crypto.randomUUID();
     const worker = new Worker(path.join(__dirname, 'analysis-worker.js'));
-    const entry = { id: analysisId, sessionId, directory, worker, pending: new Map() };
+    const entry = { id: analysisId, sessionId, directory, worker, pending: new Map(), webContentsId: ownerWebContentsId };
     activeAnalyses.set(analysisId, entry);
     worker.on('message', message => {
         if (message.type === 'progress') {
-            if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('analysis:progress', { analysisId, ...message });
+            sendAnalysisProgress(entry, message);
             return;
         }
         if (message.type !== 'response') return;
@@ -503,11 +647,25 @@ async function captureReportCharts(window, directory) {
     }
 }
 
+async function saveScreenshotForWindow(window, pageTitle = '当前页面') {
+    if (!window || window.isDestroyed()) throw new Error('当前窗口已关闭');
+    const image = await window.webContents.capturePage();
+    const result = await dialog.showSaveDialog(window, {
+        title: '保存界面截图',
+        defaultPath: `曹操_${screenshotFilePart(pageTitle)}_${localFileStamp()}.png`,
+        filters: [{ name: 'PNG 图片', extensions: ['png'] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+    await fsp.writeFile(result.filePath, image.toPNG());
+    return result.filePath;
+}
+
 async function exportAnalysisReport(analysisId) {
     const entry = requireAnalysis(analysisId);
     const data = await analysisRequest(entry, 'report');
     data.generatedAt = nowIso();
-    const result = await dialog.showSaveDialog(mainWindow, {
+    const ownerWindow = BrowserWindow.getAllWindows().find(window => window.webContents.id === entry.webContentsId) || mainWindow;
+    const result = await dialog.showSaveDialog(ownerWindow, {
         title: '导出 EEG 分析报告',
         defaultPath: `曹操_EEG_Report_${localFileStamp()}.pdf`,
         filters: [{ name: 'PDF 报告', extensions: ['pdf'] }],
@@ -561,7 +719,13 @@ function registerIpc() {
     ipcMain.handle('session:event', (_event, id, record) => appendRecordingEvent(id, record));
     ipcMain.handle('session:stop', (_event, id, status, reason) => stopRecording(id, status, reason));
     ipcMain.handle('sessions:list', () => listSessions());
-    ipcMain.handle('analysis:open', (_event, sessionId) => openAnalysis(sessionId));
+    ipcMain.handle('analysis-window:open', (_event, sessionId) => openAnalysisWindow(sessionId));
+    ipcMain.handle('analysis-window:close', event => {
+        const window = BrowserWindow.fromWebContents(event.sender);
+        if (window && window !== mainWindow && !window.isDestroyed()) window.close();
+        return true;
+    });
+    ipcMain.handle('analysis:open', (event, sessionId) => openAnalysis(sessionId, event.sender.id));
     ipcMain.handle('analysis:viewport', (_event, request) => analysisRequest(requireAnalysis(request.analysisId), 'viewport', request));
     ipcMain.handle('analysis:spectrogram', (_event, request) => analysisRequest(requireAnalysis(request.analysisId), 'spectrogram', request));
     ipcMain.handle('analysis:segments', (_event, analysisId, segments) => analysisRequest(requireAnalysis(analysisId), 'segments', { segments }));
@@ -576,16 +740,9 @@ function registerIpc() {
         shell.showItemInFolder(targetPath);
         return true;
     });
-    ipcMain.handle('screenshot:save', async () => {
-        const image = await mainWindow.webContents.capturePage();
-        const result = await dialog.showSaveDialog(mainWindow, {
-            title: '保存界面截图',
-            defaultPath: `曹操_${localFileStamp()}.png`,
-            filters: [{ name: 'PNG 图片', extensions: ['png'] }],
-        });
-        if (result.canceled || !result.filePath) return null;
-        await fsp.writeFile(result.filePath, image.toPNG());
-        return result.filePath;
+    ipcMain.handle('screenshot:save', (event, pageTitle) => {
+        const window = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+        return saveScreenshotForWindow(window, pageTitle);
     });
     ipcMain.handle('diagnostic:complete', async (_event, report) => {
         const directory = path.join(__dirname, 'artifacts');
@@ -608,6 +765,7 @@ app.whenReady().then(async () => {
     session.defaultSession.setPermissionCheckHandler((_webContents, permission) => permission === 'bluetooth');
     session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => callback(permission === 'bluetooth'));
     session.defaultSession.setDevicePermissionHandler(details => details.deviceType === 'bluetooth');
+    configureApplicationMenu();
     registerIpc();
     if (debugCliMode) createDebugWindow(); else createWindow();
     app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });

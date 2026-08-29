@@ -16,7 +16,7 @@
     "audit:realtime-input": "node scripts/audit-realtime-input.js",
     "audit:realtime-inference": "node scripts/audit-realtime-inference.js",
     "debug:device": "node debug-cli.js",
-    "check": "node --check main.js && node --check preload.js && node --check debug-cli.js && node --check analysis-worker.js && node --check sleep-stage-worker.js && node --check src/edf.js && node --check src/core.js && node --check src/analysis-core.js && node --check src/analysis-report.js && node --check src/analysis-ui.js && node --check src/realtime-sleep.js && node --check src/transport.js && node --check src/app.js && node --check src/debug.js",
+    "check": "node --check main.js && node --check preload.js && node --check analysis-preload.js && node --check debug-cli.js && node --check analysis-worker.js && node --check sleep-stage-worker.js && node --check src/edf.js && node --check src/core.js && node --check src/analysis-core.js && node --check src/analysis-report.js && node --check src/analysis-ui.js && node --check src/analysis-window.js && node --check src/realtime-sleep.js && node --check src/transport.js && node --check src/app.js && node --check src/debug.js",
     "test": "node --test test/*.test.js"
   },
   "devDependencies": {
