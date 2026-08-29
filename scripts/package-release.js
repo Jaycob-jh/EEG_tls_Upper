@@ -64,8 +64,17 @@ async function main() {
     console.log(`Packaging ${PACKAGE.productName} ${PACKAGE.version} for ${platform}-${arch}`);
     console.log(`Output: ${output}`);
     const appPaths = await packager(options);
-    const appPath = appPaths[0];
-    if (!appPath || !fs.existsSync(appPath)) throw new Error('Electron 打包完成但未找到输出目录');
+    const packagedPath = appPaths[0];
+    if (!packagedPath || !fs.existsSync(packagedPath)) throw new Error('Electron 打包完成但未找到输出目录');
+
+    // @electron/packager returns the target output directory on macOS;
+    // the signable bundle is the .app nested inside that directory.
+    const appPath = platform === 'darwin'
+        ? (packagedPath.endsWith('.app')
+            ? packagedPath
+            : path.join(packagedPath, `${PACKAGE.productName}.app`))
+        : packagedPath;
+    if (!fs.existsSync(appPath)) throw new Error(`Electron 打包完成但未找到应用包：${appPath}`);
 
     let executablePath;
     if (platform === 'win32') executablePath = path.join(appPath, `${PACKAGE.productName}.exe`);

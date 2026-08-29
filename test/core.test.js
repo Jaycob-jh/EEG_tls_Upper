@@ -410,6 +410,8 @@ test('macOS packaging produces an Apple Silicon Cao Cao app with its custom icon
     assert.match(arm64Command, /--platform darwin --arch arm64/);
     assert.match(fs.readFileSync(path.join(__dirname, '..', 'scripts', 'package-release.js'), 'utf8'), /cao-cao-original\.icns/);
     assert.match(fs.readFileSync(path.join(__dirname, '..', 'scripts', 'package-release.js'), 'utf8'), /codesign/);
+    assert.match(fs.readFileSync(path.join(__dirname, '..', 'scripts', 'package-release.js'), 'utf8'), /packagedPath/);
+    assert.match(fs.readFileSync(path.join(__dirname, '..', 'scripts', 'package-release.js'), 'utf8'), /\$\{PACKAGE\.productName\}\.app/);
     assert.equal(fs.existsSync(iconPath), true);
 });
 
