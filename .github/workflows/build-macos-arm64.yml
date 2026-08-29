@@ -1,0 +1,51 @@
+name: Build macOS arm64
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing GitHub Release tag to receive the macOS asset (optional)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check source and tests
+        run: npm run check && npm test
+
+      - name: Build Apple Silicon app
+        run: npm run package:mac:arm64
+
+      - name: Archive app
+        run: ditto -c -k --sequesterRsrc --keepParent "dist/曹操-darwin-arm64/曹操.app" "CaoCao-macos-arm64-v${{ github.run_number }}.zip"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CaoCao-macos-arm64
+          path: CaoCao-macos-arm64-v${{ github.run_number }}.zip
+          if-no-files-found: error
+
+      - name: Upload to GitHub Release
+        if: ${{ inputs.release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ inputs.release_tag }}" "CaoCao-macos-arm64-v${{ github.run_number }}.zip" --clobber
