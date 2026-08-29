@@ -43,6 +43,7 @@ test('records page opens a non-modal analysis window and exposes useful native f
     assert.match(app, /openAnalysisWindow/);
     assert.match(ui, /async function openForSession\(sessionId\)/);
     assert.match(ui, /closeAnalysisWindow/);
+    assert.match(ui, /state\.opening/);
     assert.match(main, /function configureApplicationMenu()/);
     assert.match(main, /analysis-window:open/);
     assert.match(main, /modal: false/);

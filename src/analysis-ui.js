@@ -5,7 +5,7 @@
     const state = {
         sessions: [], analysisId: null, summary: null, source: 'filtered',
         startSample: 0, endSample: 1, yZoom: 1, yOffset: 0,
-        viewport: null, requestSerial: 0, drag: null, initialized: false,
+        viewport: null, requestSerial: 0, drag: null, initialized: false, opening: false,
         spectrogram: null, spectrogramSerial: 0, yasa: null, yasaRunning: false,
     };
 
@@ -95,10 +95,12 @@
         $('analysis-empty').textContent = '正在读取并分析记录…';
         $('analysis-yasa-button').disabled = true;
         $('analysis-export-button').disabled = true;
+        state.opening = true;
         setLoading(true, '读取采集数据…', 1);
         try {
             const result = await window.desktopAPI.openAnalysis(sessionId);
             state.analysisId = result.analysisId;
+            state.opening = false;
             state.summary = result;
             state.source = 'filtered';
             state.startSample = 0;
@@ -114,6 +116,7 @@
             await requestSpectrogram();
             return result;
         } catch (error) {
+            state.opening = false;
             setLoading(false);
             $('analysis-empty').textContent = `分析失败：${error.message}`;
             toast(error.message, true);
@@ -500,7 +503,7 @@
         $('analysis-apply-segments').addEventListener('click',()=>applySegments().catch(error=>toast(error.message,true)));
         setupCanvas();
         setupSpectrogram();
-        window.desktopAPI.onAnalysisProgress(progress=>{if(!state.analysisId||progress.analysisId!==state.analysisId)return;setLoading(true,progress.detail||progress.phase,progress.percent);});
+        window.desktopAPI.onAnalysisProgress(progress=>{if(!state.analysisId&&!state.opening)return;if(state.analysisId&&progress.analysisId!==state.analysisId)return;setLoading(true,progress.detail||progress.phase,progress.percent);});
     }
 
     function init() {
