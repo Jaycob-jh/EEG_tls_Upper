@@ -112,8 +112,10 @@
             $('analysis-workspace').hidden = false;
             $('analysis-export-button').disabled = false;
             setLoading(false);
-            await requestViewport();
-            await requestSpectrogram();
+            // The summary is the first useful result. The two visualizations
+            // are independent follow-up requests, so they should not block
+            // the page from becoming usable one after another.
+            void Promise.allSettled([requestViewport(), requestSpectrogram()]);
             return result;
         } catch (error) {
             state.opening = false;

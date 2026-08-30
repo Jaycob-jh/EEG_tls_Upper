@@ -831,6 +831,7 @@
 
     async function queryStatus() {
         const status = await requireClient().getStatus();
+        if (!state.impedanceMode) state.eegRunning = Boolean(status.eegRunning);
         state.lightRunning[1] = Boolean(status.light1Running);
         state.lightRunning[2] = Boolean(status.light2Running);
         state.lightStateChannelVerified = { 1: true, 2: true };
@@ -839,6 +840,8 @@
         state.lightStatePending = null;
         state.lightStateError = null;
         renderLightStimulusState();
+        updateEegUi();
+        renderNextAction();
         $('metric-battery').textContent = `${status.batteryLevel}%`;
         $('metric-battery-update').textContent = `更新 ${formatTime()} · ${status.charging ? '充电中' : '未充电'}`;
         $('metric-battery-update').removeAttribute('title');
@@ -926,6 +929,7 @@
             state.eegRunning = true;
             state.impedanceMode = false;
             updateEegUi();
+            renderNextAction();
             addActivity(`CH${channel} EEG 已启动`);
             await audit('eeg_started', { channel });
         } catch (error) {
@@ -945,6 +949,7 @@
             state.eegRunning = false;
             state.impedanceMode = false;
             updateEegUi();
+            renderNextAction();
             addActivity('EEG 已停止');
             await audit('eeg_stopped', { reason });
             if (state.activeSession) await finishSession('completed', reason);
@@ -954,6 +959,8 @@
     async function measureImpedance(channel = state.selectedChannel) {
         if (state.eegRunning) throw new Error('阻抗检测前必须停止普通 EEG');
         const client = requireClient();
+        state.impedanceMode = true;
+        renderNextAction();
         $('impedance-button').disabled = true;
         $('metric-impedance-state').textContent = '正在采集 1024 点…';
         try {
@@ -970,7 +977,6 @@
             }
             await audit('impedance_config_verified', { channel, registersHex: Core.bytesToHex(registerReadback.values) });
             state.processor.reset();
-            state.impedanceMode = true;
             await client.startEeg();
             const value = await new Promise((resolve, reject) => {
                 const timer = setTimeout(() => {
@@ -990,10 +996,13 @@
             return value;
         } finally {
             try { await client.stopEeg(); } catch { /* continue restoration */ }
+            state.eegRunning = false;
             state.impedanceMode = false;
             state.processor.reset();
             await applyChannel(channel, false).catch(() => {});
             $('impedance-button').disabled = false;
+            updateEegUi();
+            renderNextAction();
         }
     }
 
@@ -1030,6 +1039,7 @@
             state.lightStatePending = { operation, channel };
             state.lightStateError = null;
             renderLightStimulusState();
+            renderNextAction();
         }
         let lastError = null;
         for (let attempt = 1; attempt <= LIGHT_MAX_ATTEMPTS; attempt++) {
@@ -1054,6 +1064,7 @@
                     state.lightStatePending = null;
                     state.lightStateError = null;
                     renderLightStimulusState();
+                    renderNextAction();
                 }
                 await audit(`light_${operation}_attempt_succeeded`, {
                     ...detail,
@@ -1081,6 +1092,7 @@
             state.lightStatePending = null;
             state.lightStateError = `操作失败，状态未确认：${lastError?.message || '未知错误'}`;
             renderLightStimulusState();
+            renderNextAction();
         }
         throw lastError || new Error(`光刺激 CH${channel} ${operation}失败`);
     }
@@ -1311,6 +1323,7 @@
             toast(`${message}：${event.error.message}`, 'error');
             if (event.plan.mode !== 'relative') void runUiTask(() => safeStop('clock_plan_action_failed'));
         }
+        renderNextAction();
         audit(`plan_action_${event.phase}`, {
             planId: event.plan.id,
             eventId: event.action.id,
@@ -1376,9 +1389,27 @@
         $('relative-plan-toggle').className = `button ${relativeRun ? 'danger' : 'success'}`;
         updateHomePlanControls();
 
+        const operation = Core.deviceOperationPresentation({
+            connected: state.connected,
+            verified: state.lightStateVerified,
+            channel: state.selectedChannel,
+            impedanceMode: state.impedanceMode,
+            eegRunning: state.eegRunning,
+            lightRunning: state.lightRunning,
+            pending: state.lightStatePending,
+        });
+        const currentAction = planEngine.getCurrentAction();
+        const actionLabel = action => ACTION_LABELS[action?.type] || action?.type || '方案动作';
+
         if (relativeRun) {
             const next = relativeRun.nextAction;
-            $('next-action').innerHTML = `<span class="time">+${formatRelativeElapsed(relativeRun.elapsedSeconds)}</span><strong>${escapeHtml(next ? ACTION_LABELS[next.type] : '正在结束')}</strong><small>${escapeHtml(relativeRun.plan.name)}${next ? ` · 第 ${(next.offsetSeconds / 60).toFixed(1)} 分钟` : ''}</small>`;
+            if (currentAction || (operation.operation !== 'idle' && operation.operation !== 'unknown')) {
+                const active = currentAction ? actionLabel(currentAction.action) : operation.label;
+                const detail = currentAction ? `${currentAction.plan.name} · 当前动作` : operation.detail;
+                $('next-action').innerHTML = `<span class="time">正在执行 · +${formatRelativeElapsed(relativeRun.elapsedSeconds)}</span><strong>${escapeHtml(active)}</strong><small>${escapeHtml(detail)}${next ? ` · 下一动作：${escapeHtml(actionLabel(next))} · 第 ${(next.offsetSeconds / 60).toFixed(1)} 分钟` : ''}</small>`;
+            } else {
+                $('next-action').innerHTML = `<span class="time">下一动作 · +${formatRelativeElapsed(relativeRun.elapsedSeconds)}</span><strong>${escapeHtml(next ? actionLabel(next) : '正在结束')}</strong><small>${escapeHtml(relativeRun.plan.name)}${next ? ` · 第 ${(next.offsetSeconds / 60).toFixed(1)} 分钟` : ''} · 当前设备：${escapeHtml(operation.label)}</small>`;
+            }
             return;
         }
 
@@ -1386,9 +1417,15 @@
             (plan.actions || []).map(action => ({ plan, action, date: nextDateForTime(action.time) })));
         candidates.sort((a, b) => a.date - b.date);
         const next = candidates[0];
-        $('next-action').innerHTML = next
-            ? `<span class="time">${escapeHtml(next.action.time.slice(0, 5))}</span><strong>${escapeHtml(ACTION_LABELS[next.action.type])}</strong><small>${escapeHtml(next.plan.name)} · CH${next.plan.eegChannel}</small>`
-            : '<span class="time">--:--</span><strong>暂无启用方案</strong><small>可在设备首页新建，或进入方案管理</small>';
+        if (currentAction || (operation.operation !== 'idle' && operation.operation !== 'unknown')) {
+            const active = currentAction ? actionLabel(currentAction.action) : operation.label;
+            const detail = currentAction ? `${currentAction.plan.name} · 当前动作` : operation.detail;
+            $('next-action').innerHTML = `<span class="time">正在执行</span><strong>${escapeHtml(active)}</strong><small>${escapeHtml(detail)}${next ? ` · 下一动作：${escapeHtml(actionLabel(next))} · ${escapeHtml(next.action.time.slice(0, 5))}` : ''}</small>`;
+        } else {
+            $('next-action').innerHTML = next
+                ? `<span class="time">下一动作 · ${escapeHtml(next.action.time.slice(0, 5))}</span><strong>${escapeHtml(actionLabel(next.action))}</strong><small>${escapeHtml(next.plan.name)} · CH${next.plan.eegChannel} · 当前设备：${escapeHtml(operation.label)}</small>`
+                : '<span class="time">--:--</span><strong>暂无启用方案</strong><small>可在设备首页新建，或进入方案管理</small>';
+        }
     }
 
     function updateHomePlanControls() {

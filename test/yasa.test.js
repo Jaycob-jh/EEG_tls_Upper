@@ -28,6 +28,17 @@ test('YASA integration preserves the raw-data boundary and removes the redundant
     assert.match(read('python/yasa_offline_staging.py'), /voltage_uv/);
 });
 
+test('YASA uses the project virtual environment before system Python', () => {
+    const main = read('main.js');
+    const script = read('python/yasa_offline_staging.py');
+    const requirements = read('python/requirements-yasa.txt');
+    assert.match(main, /\.venv-yasa/);
+    assert.match(main, /BRAINLUME_PYTHON/);
+    assert.match(main, /const failures = \[\]/);
+    assert.match(script, /project_python/);
+    assert.match(requirements, /\.venv-yasa\/bin\/python/);
+});
+
 test('records page opens a non-modal analysis window and exposes useful native file actions', () => {
     const html = read('src/index.html');
     const analysisHtml = read('src/analysis.html');

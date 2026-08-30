@@ -496,27 +496,42 @@ async function runYasaStaging(sessionId) {
     const outputDir = path.join(directory, 'analysis', 'yasa');
     await fsp.mkdir(outputDir, { recursive: true });
     const scriptArgs = ['--session-dir', directory, '--output-dir', outputDir];
-    const candidates = process.env.BRAINLUME_PYTHON
-        ? [[process.env.BRAINLUME_PYTHON, []]]
+    const explicitPython = String(process.env.BRAINLUME_PYTHON || '').trim();
+    const projectPython = process.platform === 'win32'
+        ? path.join(__dirname, '.venv-yasa', 'Scripts', 'python.exe')
+        : path.join(__dirname, '.venv-yasa', 'bin', 'python');
+    const candidates = explicitPython
+        ? [[explicitPython, []]]
         : process.platform === 'win32'
-            ? [['py', ['-3']], ['python', []], ['python3', []]]
-            : [['python3', []], ['python', []]];
+            ? [[projectPython, []], ['py', ['-3']], ['python', []], ['python3', []]]
+            : [[projectPython, []], ['python3', []], ['python', []]];
 
-    let lastSpawnError = null;
+    const failures = [];
     for (const [command, prefix] of candidates) {
+        if (path.isAbsolute(command) && !fs.existsSync(command)) {
+            failures.push(`${command} 不存在`);
+            continue;
+        }
         const result = await runChildProcess(command, [...prefix, scriptPath, ...scriptArgs]);
         if (result.error) {
-            if (result.error.code === 'ENOENT') { lastSpawnError = result.error; continue; }
-            throw new Error(`无法启动 Python：${result.error.message}`);
+            failures.push(`${command}：${result.error.message}`);
+            if (explicitPython || result.error.code !== 'ENOENT') break;
+            continue;
         }
         const payload = parseLastJsonLine(result.stdout);
         if (result.code === 0 && payload?.ok) {
             return { ...payload, pythonCommand: command, outputDir };
         }
         const message = payload?.error || result.stderr.trim() || `Python 进程退出码 ${result.code}`;
-        throw new Error(message);
+        failures.push(`${command}：${message}`);
+        if (explicitPython) break;
     }
-    throw new Error(`未找到可用的 Python 3 解释器${lastSpawnError ? `：${lastSpawnError.message}` : ''}`);
+    const requirementPath = path.join(__dirname, 'python', 'requirements-yasa.txt');
+    throw new Error([
+        'YASA 离线环境未就绪。',
+        failures.join('；'),
+        `请在终端运行："${projectPython}" -m pip install -r "${requirementPath}"`,
+    ].filter(Boolean).join('\n'));
 }
 
 function analysisRequest(entry, action, payload = {}, timeoutMs = 300000) {

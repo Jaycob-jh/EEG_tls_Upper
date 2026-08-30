@@ -44,6 +44,43 @@
         return hours > 0 ? `${hours}:${pad(minutes)}:${pad(rest)}` : `${pad(minutes)}:${pad(rest)}`;
     }
 
+    // A plan's next action is only a schedule hint. Keep the hardware operation
+    // presentation separate so an upcoming light action cannot look like a
+    // currently active light stimulus (for example while impedance is measured).
+    function deviceOperationPresentation(value = {}) {
+        const source = value && typeof value === 'object' ? value : {};
+        if (!source.connected) {
+            return { tone: 'unknown', operation: 'unknown', label: '未连接', detail: '无法确认设备当前功能' };
+        }
+        if (source.impedanceMode) {
+            return { tone: 'active', operation: 'impedance_check', label: '检测阻抗', detail: `CH${Number(source.channel) || 2} · 当前设备操作` };
+        }
+        if (source.pending && (source.pending.operation === 'start' || source.pending.operation === 'stop')) {
+            const operation = source.pending.operation === 'start' ? '开启' : '关闭';
+            return {
+                tone: 'pending', operation: `light_${source.pending.operation}`,
+                label: `正在${operation}光刺激`, detail: `CH${Number(source.pending.channel) || 2} · 等待设备确认`,
+            };
+        }
+        const channels = Object.entries(source.lightRunning || {})
+            .filter(([, running]) => Boolean(running))
+            .map(([channel]) => Number(channel))
+            .filter(channel => channel === 1 || channel === 2).sort();
+        if (channels.length && source.eegRunning) {
+            return { tone: 'active', operation: 'eeg_and_light', label: `采集 EEG · CH${channels.join('、CH')} 刺激中`, detail: '设备状态回读确认' };
+        }
+        if (channels.length) {
+            return { tone: 'active', operation: 'light', label: `CH${channels.join('、CH')} 光刺激中`, detail: '设备状态回读确认' };
+        }
+        if (source.eegRunning) {
+            return { tone: 'active', operation: 'eeg', label: '采集 EEG', detail: `CH${Number(source.channel) || 2} · 设备状态回读确认` };
+        }
+        if (!source.verified) {
+            return { tone: 'unknown', operation: 'unknown', label: '状态待确认', detail: '已连接，正在读取设备当前功能' };
+        }
+        return { tone: 'off', operation: 'idle', label: '待机', detail: '未检测到 EEG、阻抗检测或光刺激运行' };
+    }
+
     function sampleCountToSeconds(sampleCount, sampleRateHz = 250) {
         const count = Math.max(0, Number(sampleCount) || 0);
         const rate = Number(sampleRateHz);
@@ -179,16 +216,21 @@
             this.running = false;
             this.interval = null;
             this.busy = false;
+            this.currentAction = null;
             this.relativeRun = null;
         }
         setPlans(plans) { this.plans = Array.isArray(plans) ? plans : []; }
+        getCurrentAction() { return this.currentAction; }
         getRelativeStatus() {
             if (!this.relativeRun) return null;
             const elapsedSeconds = Math.max(0, (this.monotonicNow() - this.relativeRun.startedMonotonicMs) / 1000);
             const plan = this.relativeRun.plan;
             const actions = [...(plan?.actions || [])].sort((a, b) => actionScheduleSeconds(a, 'relative') - actionScheduleSeconds(b, 'relative'));
             const nextAction = actions.find(action => !this.relativeRun.processed.has(action.id)) || null;
-            return { planId: this.relativeRun.planId, plan, elapsedSeconds, nextAction, startedAt: this.relativeRun.startedAt };
+            return {
+                planId: this.relativeRun.planId, plan, elapsedSeconds, nextAction,
+                currentAction: this.relativeRun.currentAction || null, startedAt: this.relativeRun.startedAt,
+            };
         }
         startRelative(planId) {
             if (this.relativeRun) throw new Error('已有相对方案正在运行');
@@ -204,6 +246,7 @@
                 startedAt: formatLocalIso(now),
                 startedMonotonicMs: this.monotonicNow(),
                 processed: new Set(),
+                currentAction: null,
             };
             this.onEvent({ phase: 'run-started', plan, startedAt: this.relativeRun.startedAt });
             void this.tick();
@@ -236,6 +279,7 @@
                 startedAt: formatLocalIso(now),
                 startedMonotonicMs: this.monotonicNow(),
                 processed: new Set(),
+                currentAction: null,
             };
             this.onEvent({ phase: 'run-started', plan, sourceMode: 'clock', startedAt: this.relativeRun.startedAt });
             void this.tick();
@@ -245,6 +289,7 @@
             if (!this.relativeRun) return null;
             const status = this.getRelativeStatus();
             this.relativeRun = null;
+            this.currentAction = null;
             this.onEvent({ phase: 'run-stopped', plan: status.plan, reason, elapsedSeconds: status.elapsedSeconds });
             return status;
         }
@@ -286,11 +331,14 @@
                             continue;
                         }
                         this.executed.add(key);
+                        this.currentAction = { plan, action, startedAt: formatLocalIso(now) };
                         this.onEvent({ phase: 'started', plan, action, delaySeconds: delay });
                         try {
                             await this.execute(plan, action);
+                            this.currentAction = null;
                             this.onEvent({ phase: 'completed', plan, action, delaySeconds: delay });
                         } catch (error) {
+                            this.currentAction = null;
                             this.abortedDailyPlans.add(planKey);
                             this.onEvent({ phase: 'failed', plan, action, delaySeconds: delay, error });
                         }
@@ -319,11 +367,17 @@
                     this.onEvent({ phase: 'run-failed', plan: run.plan, reason: 'relative_action_overdue', elapsedSeconds });
                     return;
                 }
+                run.currentAction = { plan: run.plan, action, startedAt: formatLocalIso(this.now()) };
+                this.currentAction = run.currentAction;
                 this.onEvent({ phase: 'started', plan: run.plan, action, delaySeconds });
                 try {
                     await this.execute(run.plan, action);
+                    run.currentAction = null;
+                    this.currentAction = null;
                     this.onEvent({ phase: 'completed', plan: run.plan, action, delaySeconds });
                 } catch (error) {
+                    run.currentAction = null;
+                    this.currentAction = null;
                     this.onEvent({ phase: 'failed', plan: run.plan, action, delaySeconds, error });
                     this.relativeRun = null;
                     this.onEvent({ phase: 'run-failed', plan: run.plan, reason: error.message, elapsedSeconds });
@@ -333,6 +387,7 @@
             }
             if (run.processed.size === actions.length) {
                 this.relativeRun = null;
+                this.currentAction = null;
                 this.onEvent({ phase: 'run-completed', plan: run.plan, elapsedSeconds });
             }
         }
@@ -422,7 +477,7 @@
     return Object.freeze({
         ACTION_TYPES, PLAN_MODES, START_GRACE_SECONDS,
         WAVEFORM_X_RANGES_SECONDS, WAVEFORM_REFRESH_RATES_FPS, normalizeWaveformDisplay,
-        formatDuration, sampleCountToSeconds, waveformScale,
+        formatDuration, sampleCountToSeconds, waveformScale, deviceOperationPresentation,
         FIXED_PLAN_EEG_CHANNEL, FIXED_PLAN_LIGHT_CHANNEL, normalizePlan,
         EEG_CSV_COLUMNS, eegCsvLine, createEegStreamStats, trackEegStreamFrame, eegStreamFrameRate, eegStreamLossRate,
         parseTimeOfDay, formatLocalIso, validatePlan, PlanEngine, csvEscape, bytesToHex, makeId,

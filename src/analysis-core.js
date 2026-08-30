@@ -75,8 +75,8 @@ function peakToPeak(values) {
     return Number.isFinite(minimum) ? maximum - minimum : 0;
 }
 
-function robustRange(values) {
-    return percentile(values, 0.99) - percentile(values, 0.01);
+function robustRange(values, maxSamples = 200000) {
+    return percentile(values, 0.99, maxSamples) - percentile(values, 0.01, maxSamples);
 }
 
 function biquadCoefficients(type, sampleRateHz, frequencyHz, q) {

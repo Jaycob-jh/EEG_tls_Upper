@@ -28,6 +28,44 @@ test('CH2 normal and impedance ADS1299 images match the device specification', (
     assert.equal(impedance[0x0D - 1], 0x00);
 });
 
+test('device operation presentation distinguishes live hardware state from the next plan action', () => {
+    assert.deepEqual(Core.deviceOperationPresentation({
+        connected: true, verified: true, channel: 2, impedanceMode: true,
+        eegRunning: true, lightRunning: { 1: false, 2: false },
+    }), {
+        tone: 'active', operation: 'impedance_check', label: '检测阻抗', detail: 'CH2 · 当前设备操作',
+    });
+    assert.deepEqual(Core.deviceOperationPresentation({
+        connected: true, verified: true, channel: 2, eegRunning: false,
+        lightRunning: { 1: false, 2: true },
+    }), {
+        tone: 'active', operation: 'light', label: 'CH2 光刺激中', detail: '设备状态回读确认',
+    });
+    assert.deepEqual(Core.deviceOperationPresentation({
+        connected: true, verified: true, channel: 2, eegRunning: false,
+        lightRunning: { 1: false, 2: false },
+    }), {
+        tone: 'off', operation: 'idle', label: '待机', detail: '未检测到 EEG、阻抗检测或光刺激运行',
+    });
+});
+
+test('plan engine exposes the action currently being executed', async () => {
+    let release;
+    const engine = new Core.PlanEngine({
+        monotonicNow: () => 0,
+        execute: async () => new Promise(resolve => { release = resolve; }),
+    });
+    engine.setPlans([{ id: 'relative', name: 'relative', mode: 'relative', enabled: true, eegChannel: 2,
+        actions: [{ id: 'impedance', offsetSeconds: 0, type: 'impedance_check' }] }]);
+    engine.startRelative('relative');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(engine.getCurrentAction().action.type, 'impedance_check');
+    assert.equal(engine.getRelativeStatus().currentAction.action.id, 'impedance');
+    release();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(engine.getCurrentAction(), null);
+});
+
 test('firmware error codes and request context are preserved', async () => {
     let onData;
     const transport = {

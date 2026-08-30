@@ -137,11 +137,14 @@ def run() -> int:
         import yasa
     except ModuleNotFoundError as exc:
         requirements = Path(__file__).with_name("requirements-yasa.txt").resolve()
+        project_root = Path(__file__).resolve().parents[1]
+        python_name = "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
+        project_python = project_root / ".venv-yasa" / python_name
         return emit({
             "ok": False,
             "error": (
-                f"缺少 Python 依赖：{exc.name}。请先运行："
-                f"{sys.executable} -m pip install -r \"{requirements}\""
+                f"缺少 Python 依赖：{exc.name}。请先安装项目专用环境："
+                f"\"{project_python}\" -m pip install -r \"{requirements}\""
             ),
         }, 2)
 
@@ -166,7 +169,11 @@ def run() -> int:
         if args.male is not None:
             yasa_metadata["male"] = args.male == "true"
 
-        staging = yasa.SleepStaging(raw, eeg_name="EEG", metadata=yasa_metadata or None)
+        # EDF files preserve the writer label (currently "EEG CH2"), while
+        # legacy CSV sessions create a channel named "EEG". Use the actual
+        # channel name so both storage formats reach the same YASA pipeline.
+        eeg_name = raw.ch_names[0]
+        staging = yasa.SleepStaging(raw, eeg_name=eeg_name, metadata=yasa_metadata or None)
         prediction = staging.predict()
         predicted_labels = getattr(prediction, "hypno", prediction)
         labels = [normalize_stage(value) for value in predicted_labels]

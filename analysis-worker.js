@@ -114,7 +114,9 @@ function basicMetrics(raw, filtered, sampleRateHz) {
     const rawMedian = Analysis.percentile(raw, 0.5);
     const minuteSamples = Math.max(1, Math.round(sampleRateHz * 60));
     const minuteMedians = [];
-    for (let start = 0; start < raw.length; start += minuteSamples) minuteMedians.push(Analysis.percentile(raw.subarray(start, Math.min(raw.length, start + minuteSamples)), 0.5, 20000));
+    // A minute baseline is a descriptive metric; deterministic sampling keeps
+    // long overnight records responsive without changing the stored signal.
+    for (let start = 0; start < raw.length; start += minuteSamples) minuteMedians.push(Analysis.percentile(raw.subarray(start, Math.min(raw.length, start + minuteSamples)), 0.5, 4000));
     const psd = Analysis.welchPsd(filtered, sampleRateHz);
     return {
         rawAbsoluteMedianUv: Math.abs(rawMedian),
@@ -133,7 +135,10 @@ function analyzeEpochs(filtered, sampleRateHz) {
     const epochs = [];
     for (let start = 0, index = 0; start + epochSamples <= filtered.length; start += epochSamples, index++) {
         const values = filtered.subarray(start, start + epochSamples);
-        const range = Analysis.robustRange(values);
+        // The quality gate intentionally uses a robust percentile range, so a
+        // deterministic 2,000-point sample is enough for each 30 s epoch and
+        // avoids sorting all 7,500 points repeatedly on long recordings.
+        const range = Analysis.robustRange(values, 2000);
         epochs.push({ index, startSec: start / sampleRateHz, endSec: (start + epochSamples) / sampleRateHz,
             rmsUv: Analysis.rms(values), robustRangeUv: range, rejected: range >= 150 });
     }
@@ -211,6 +216,7 @@ async function openRecording(payload) {
     };
     progress('metrics', 72, '计算数据质量与频谱');
     recording.metrics = basicMetrics(recording.raw, recording.filtered, sampleRateHz);
+    progress('metrics', 84, '计算每个 30 秒 epoch 的质量');
     recording.epochs = analyzeEpochs(recording.filtered, sampleRateHz);
     recording.integrity.epochs = recording.epochs.length;
     recording.integrity.rejectedEpochs = recording.epochs.filter(epoch => epoch.rejected).length;
