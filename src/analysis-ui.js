@@ -56,6 +56,11 @@
         percentNode.textContent = `${Math.round(safePercent)}%`;
     }
 
+    function hideEmptyState() {
+        updateEmptyState('', '', null, false);
+        $('analysis-empty').hidden = true;
+    }
+
     function clearOpeningWatchdog() {
         if (state.openingWatchdog) clearTimeout(state.openingWatchdog);
         state.openingWatchdog = null;
@@ -174,7 +179,7 @@
             state.yZoom = 1;
             state.yOffset = 0;
             renderSummary();
-            $('analysis-empty').hidden = true;
+            hideEmptyState();
             $('analysis-workspace').hidden = false;
             $('analysis-export-button').disabled = false;
             setLoading(false);

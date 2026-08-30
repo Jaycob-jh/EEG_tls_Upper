@@ -75,6 +75,9 @@ test('analysis loading state exposes an inline progress bar in the empty view', 
     assert.match(ui, /function updateEmptyState/);
     assert.match(ui, /analysis-empty-percent/);
     assert.match(css, /\.analysis-empty-progress\s*\{/);
+    assert.match(css, /\.analysis-empty\[hidden\]\s*\{\s*display:\s*none;\s*\}/);
+    assert.match(ui, /function hideEmptyState/);
+    assert.match(ui, /hideEmptyState\(\)/);
 });
 
 test('analysis completion waits for the result transfer before showing 100 percent', () => {

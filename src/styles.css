@@ -149,6 +149,7 @@ body.analysis-window-body { background: var(--bg); }
 .analysis-progress > div { height: 7px; background: #dce5ea; overflow: hidden; }
 .analysis-progress i { display: block; width: 0; height: 100%; background: var(--blue); transition: width .18s ease; }
 .analysis-empty { min-height: 220px; display: grid; place-items: center; border: 1px dashed #b9c8d1; color: var(--muted); background: rgba(255,255,255,.55); }
+.analysis-empty[hidden] { display: none; }
 .analysis-empty-content { width: min(560px, calc(100% - 40px)); display: grid; justify-items: center; gap: 10px; text-align: center; }
 .analysis-empty-content strong { color: var(--text); font-size: 18px; font-weight: 700; }
 .analysis-empty-content > span { color: var(--muted); font-size: 12px; }

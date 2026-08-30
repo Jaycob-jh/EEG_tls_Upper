@@ -233,7 +233,7 @@ test('relative plan rejects overdue actions instead of catching up', async () =>
     assert.deepEqual(events.slice(-2), ['skipped', 'run-failed']);
 });
 
-test('daily plan skips an overdue start but still executes its safety stop', async () => {
+test('daily plan startup baseline does not replay overdue actions or safety stops', async () => {
     const calls = [];
     const events = [];
     const engine = new Core.PlanEngine({
@@ -246,9 +246,42 @@ test('daily plan skips an overdue start but still executes its safety stop', asy
         { id: 'stop', time: '12:01:00', type: 'light_stop', lightChannel: 2 },
     ] }]);
     await engine.tick();
-    assert.deepEqual(calls, ['stop']);
-    assert.ok(events.some(event => event.id === 'start' && event.phase === 'skipped' && event.reason === 'clock_action_overdue'));
-    assert.ok(events.some(event => event.id === 'stop' && event.phase === 'completed'));
+    assert.deepEqual(calls, []);
+    assert.deepEqual(events, [{ phase: 'startup-baseline', id: undefined, reason: 'clock_action_overdue' }]);
+});
+
+test('daily plan executes a safety stop after a successful start in the same app run', async () => {
+    let now = new Date(2026, 7, 7, 12, 0, 1);
+    const calls = [];
+    const engine = new Core.PlanEngine({
+        now: () => now,
+        execute: async (_plan, action) => calls.push(action.id),
+    });
+    engine.setPlans([{ id: 'p', name: 'active light', mode: 'clock', enabled: true, eegChannel: 2, actions: [
+        { id: 'start', time: '12:00:00', type: 'light_start', lightChannel: 2, light: { frequencyHz: 40, durationMs: 0, powerPercent: 50 } },
+        { id: 'stop', time: '12:01:00', type: 'light_stop', lightChannel: 2 },
+    ] }]);
+    await engine.tick();
+    now = new Date(2026, 7, 7, 12, 1, 12);
+    await engine.tick();
+    assert.deepEqual(calls, ['start', 'stop']);
+});
+
+test('daily plan does not replay a safety stop after its start failed', async () => {
+    const calls = [];
+    const engine = new Core.PlanEngine({
+        now: () => new Date(2026, 7, 7, 12, 0, 1),
+        execute: async (_plan, action) => {
+            calls.push(action.id);
+            if (action.id === 'start') throw new Error('start failed');
+        },
+    });
+    engine.setPlans([{ id: 'p', name: 'failed light', mode: 'clock', enabled: true, eegChannel: 2, actions: [
+        { id: 'start', time: '12:00:00', type: 'light_start', lightChannel: 2, light: { frequencyHz: 40, durationMs: 0, powerPercent: 50 } },
+        { id: 'stop', time: '12:01:00', type: 'light_stop', lightChannel: 2 },
+    ] }]);
+    await engine.tick();
+    assert.deepEqual(calls, ['start']);
 });
 
 test('relative plan catches up an overdue safety stop', async () => {

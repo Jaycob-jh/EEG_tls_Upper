@@ -1307,6 +1307,15 @@
             void runUiTask(() => safeStop(reason));
             return;
         }
+        if (event.phase === 'startup-baseline') {
+            void audit('plan_startup_baseline', {
+                planId: event.plan.id,
+                actionIds: event.actionIds,
+                reason: event.reason,
+                aborted: event.aborted,
+            });
+            return;
+        }
         if (event.phase === 'skipped') {
             addActivity(`方案动作已跳过：${planActionLabel(event.plan, event.action)}`, 'error');
             void audit('plan_action_skipped', { planId: event.plan.id, actionId: event.action.id, type: event.action.type, delaySeconds: event.delaySeconds, reason: event.reason }, 'error');

@@ -13,6 +13,7 @@
     const PLAN_MODES = Object.freeze(['clock', 'relative']);
     const START_GRACE_SECONDS = 5;
     const SAFETY_ACTIONS = new Set(['light_stop', 'eeg_stop']);
+    const DAILY_START_ACTIONS = new Set(['light_start', 'eeg_start']);
     const FIXED_PLAN_EEG_CHANNEL = 2;
     const FIXED_PLAN_LIGHT_CHANNEL = 2;
     const WAVEFORM_X_RANGES_SECONDS = Object.freeze([5, 10, 20, 30, 60]);
@@ -155,6 +156,14 @@
         return mode === 'relative' ? Number(action.offsetSeconds) : parseTimeOfDay(action.time);
     }
 
+    function dailyOperationForAction(action) {
+        if (action?.type === 'eeg_start' || action?.type === 'eeg_stop') return 'eeg';
+        if (action?.type === 'light_start' || action?.type === 'light_stop') {
+            return `light:${Number(action.lightChannel) || FIXED_PLAN_LIGHT_CHANNEL}`;
+        }
+        return null;
+    }
+
     function normalizePlan(plan) {
         if (!plan || typeof plan !== 'object') return plan;
         const actions = Array.isArray(plan.actions) ? plan.actions.map(action => {
@@ -213,6 +222,8 @@
             this.plans = [];
             this.executed = new Set();
             this.abortedDailyPlans = new Set();
+            this.baselinedDailyPlans = new Set();
+            this.activeDailyOperations = new Map();
             this.running = false;
             this.interval = null;
             this.busy = false;
@@ -299,6 +310,38 @@
             this.tick();
         }
         stop() { clearInterval(this.interval); this.interval = null; }
+        baselineDailyPlan(plan, today, current) {
+            const planKey = `${today}:${plan.id}`;
+            const skippedActionIds = [];
+            let aborted = false;
+            for (const action of [...plan.actions].sort((a, b) => parseTimeOfDay(a.time) - parseTimeOfDay(b.time))) {
+                const delay = current - parseTimeOfDay(action.time);
+                if (delay <= START_GRACE_SECONDS) continue;
+                this.executed.add(`${planKey}:${action.id}`);
+                skippedActionIds.push(action.id);
+                if (!SAFETY_ACTIONS.has(action.type)) aborted = true;
+            }
+            if (aborted) this.abortedDailyPlans.add(planKey);
+            if (skippedActionIds.length) {
+                this.onEvent({
+                    phase: 'startup-baseline', plan, actionIds: skippedActionIds,
+                    reason: 'clock_action_overdue', aborted,
+                });
+            }
+        }
+        updateDailyOperation(planKey, action) {
+            const operation = dailyOperationForAction(action);
+            if (!operation) return;
+            const active = this.activeDailyOperations.get(planKey) || new Set();
+            if (DAILY_START_ACTIONS.has(action.type)) active.add(operation);
+            else if (SAFETY_ACTIONS.has(action.type)) active.delete(operation);
+            if (active.size) this.activeDailyOperations.set(planKey, active);
+            else this.activeDailyOperations.delete(planKey);
+        }
+        hasActiveDailyOperation(planKey, action) {
+            const operation = dailyOperationForAction(action);
+            return Boolean(operation && this.activeDailyOperations.get(planKey)?.has(operation));
+        }
         async tick() {
             if (this.busy) return;
             this.busy = true;
@@ -314,9 +357,13 @@
                     if (planMode(plan) !== 'clock') continue;
                     const errors = validatePlan(plan);
                     if (errors.length) continue;
+                    const planKey = `${today}:${plan.id}`;
+                    if (!this.baselinedDailyPlans.has(planKey)) {
+                        this.baselineDailyPlan(plan, today, current);
+                        this.baselinedDailyPlans.add(planKey);
+                    }
                     for (const action of [...plan.actions].sort((a, b) => parseTimeOfDay(a.time) - parseTimeOfDay(b.time))) {
                         const key = `${today}:${plan.id}:${action.id}`;
-                        const planKey = `${today}:${plan.id}`;
                         const delay = current - parseTimeOfDay(action.time);
                         if (delay < 0 || this.executed.has(key)) continue;
                         if (this.abortedDailyPlans.has(planKey) && !SAFETY_ACTIONS.has(action.type)) {
@@ -330,11 +377,17 @@
                             this.onEvent({ phase: 'skipped', plan, action, delaySeconds: delay, reason: 'clock_action_overdue' });
                             continue;
                         }
+                        if (SAFETY_ACTIONS.has(action.type) && !this.hasActiveDailyOperation(planKey, action)) {
+                            this.executed.add(key);
+                            this.onEvent({ phase: 'skipped', plan, action, delaySeconds: delay, reason: 'daily_safety_not_active' });
+                            continue;
+                        }
                         this.executed.add(key);
                         this.currentAction = { plan, action, startedAt: formatLocalIso(now) };
                         this.onEvent({ phase: 'started', plan, action, delaySeconds: delay });
                         try {
                             await this.execute(plan, action);
+                            this.updateDailyOperation(planKey, action);
                             this.currentAction = null;
                             this.onEvent({ phase: 'completed', plan, action, delaySeconds: delay });
                         } catch (error) {
@@ -346,6 +399,8 @@
                 }
                 if (this.executed.size > 1000) this.executed = new Set([...this.executed].filter(key => key.startsWith(today)));
                 this.abortedDailyPlans = new Set([...this.abortedDailyPlans].filter(key => key.startsWith(today)));
+                this.baselinedDailyPlans = new Set([...this.baselinedDailyPlans].filter(key => key.startsWith(today)));
+                this.activeDailyOperations = new Map([...this.activeDailyOperations].filter(([key]) => key.startsWith(today)));
             } finally {
                 this.busy = false;
             }
