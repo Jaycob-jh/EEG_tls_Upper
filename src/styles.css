@@ -149,6 +149,15 @@ body.analysis-window-body { background: var(--bg); }
 .analysis-progress > div { height: 7px; background: #dce5ea; overflow: hidden; }
 .analysis-progress i { display: block; width: 0; height: 100%; background: var(--blue); transition: width .18s ease; }
 .analysis-empty { min-height: 220px; display: grid; place-items: center; border: 1px dashed #b9c8d1; color: var(--muted); background: rgba(255,255,255,.55); }
+.analysis-empty-content { width: min(560px, calc(100% - 40px)); display: grid; justify-items: center; gap: 10px; text-align: center; }
+.analysis-empty-content strong { color: var(--text); font-size: 18px; font-weight: 700; }
+.analysis-empty-content > span { color: var(--muted); font-size: 12px; }
+.analysis-empty-progress { width: min(460px, 100%); height: 10px; border-radius: 999px; background: #dce5ea; overflow: hidden; box-shadow: inset 0 0 0 1px rgba(99,120,133,.12); }
+.analysis-empty-progress i { display: block; width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--blue), #36a8ff); transition: width .18s ease; }
+.analysis-empty-percent { color: var(--blue) !important; font-weight: 750; font-variant-numeric: tabular-nums; }
+.analysis-empty-spinner { display: none; width: 24px; height: 24px; border: 3px solid #dce5ea; border-top-color: var(--blue); border-radius: 50%; }
+.analysis-empty[data-loading="true"] .analysis-empty-spinner { display: block; animation: analysis-spin .8s linear infinite; }
+@keyframes analysis-spin { to { transform: rotate(360deg); } }
 .analysis-workspace { display: grid; gap: 16px; }
 .analysis-workspace[hidden] { display: none; }
 .analysis-metrics { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 10px; }

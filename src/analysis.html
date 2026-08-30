@@ -23,10 +23,20 @@
             </div>
         </div>
 
-        <div class="analysis-progress" id="analysis-progress" hidden><span id="analysis-progress-label">准备分析…</span><div><i id="analysis-progress-bar"></i></div></div>
+        <div class="analysis-progress" id="analysis-progress" hidden role="progressbar" aria-label="分析进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="analysis-progress-label">准备分析…</span><div><i id="analysis-progress-bar"></i></div></div>
         <div class="notice analysis-disclaimer">仅用于研究和数据质量评估，不构成医疗诊断，也不等同于正式睡眠分期。</div>
 
-        <div class="analysis-empty" id="analysis-empty">从已有采集记录中选择一个会话开始分析。</div>
+        <div class="analysis-empty" id="analysis-empty" aria-live="polite" data-loading="false">
+            <div class="analysis-empty-content">
+                <div class="analysis-empty-spinner" aria-hidden="true"></div>
+                <strong id="analysis-empty-title">从已有采集记录中选择一个会话开始分析。</strong>
+                <span id="analysis-empty-detail">选择记录后，这里会显示读取、滤波和质量分析进度。</span>
+                <div class="analysis-empty-progress" id="analysis-empty-progress" hidden role="progressbar" aria-label="分析进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                    <i id="analysis-empty-progress-bar"></i>
+                </div>
+                <span class="analysis-empty-percent" id="analysis-empty-percent" hidden>0%</span>
+            </div>
+        </div>
         <div class="analysis-workspace" id="analysis-workspace" hidden>
             <div class="analysis-metrics" id="analysis-kpis"></div>
             <section class="analysis-section yasa-section">

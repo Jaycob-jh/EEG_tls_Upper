@@ -65,3 +65,14 @@ test('records page opens a non-modal analysis window and exposes useful native f
     assert.match(main, /保存当前页面截图/);
     assert.match(css, /\.analysis-window-content\s*\{/);
 });
+
+test('analysis loading state exposes an inline progress bar in the empty view', () => {
+    const html = read('src/analysis.html');
+    const ui = read('src/analysis-ui.js');
+    const css = read('src/styles.css');
+    assert.match(html, /id="analysis-empty-progress"/);
+    assert.match(html, /id="analysis-empty-progress-bar"/);
+    assert.match(ui, /function updateEmptyState/);
+    assert.match(ui, /analysis-empty-percent/);
+    assert.match(css, /\.analysis-empty-progress\s*\{/);
+});

@@ -31,10 +31,36 @@
         return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '--';
     }
 
+    function updateEmptyState(title, detail = '', percent = null) {
+        const empty = $('analysis-empty');
+        const titleNode = $('analysis-empty-title');
+        const detailNode = $('analysis-empty-detail');
+        const progressNode = $('analysis-empty-progress');
+        const progressBar = $('analysis-empty-progress-bar');
+        const percentNode = $('analysis-empty-percent');
+        if (!empty || !titleNode || !detailNode || !progressNode || !progressBar || !percentNode) {
+            if (empty) empty.textContent = title;
+            return;
+        }
+        titleNode.textContent = title;
+        detailNode.textContent = detail;
+        const hasProgress = percent !== null && percent !== undefined && Number.isFinite(Number(percent));
+        empty.dataset.loading = String(hasProgress);
+        progressNode.hidden = !hasProgress;
+        percentNode.hidden = !hasProgress;
+        const safePercent = hasProgress ? Math.max(0, Math.min(100, Number(percent))) : 0;
+        progressBar.style.width = `${safePercent}%`;
+        progressNode.setAttribute('aria-valuenow', String(Math.round(safePercent)));
+        percentNode.textContent = `${Math.round(safePercent)}%`;
+    }
+
     function setLoading(active, label = '准备分析…', percent = 0) {
+        const safePercent = Math.max(0, Math.min(100, Number(percent) || 0));
         $('analysis-progress').hidden = !active;
         $('analysis-progress-label').textContent = label;
-        $('analysis-progress-bar').style.width = `${Math.max(0, Math.min(100, percent))}%`;
+        $('analysis-progress-bar').style.width = `${safePercent}%`;
+        $('analysis-progress').setAttribute('aria-valuenow', String(Math.round(safePercent)));
+        if (active) updateEmptyState(label, '正在处理当前采集记录，请稍候…', safePercent);
         $('analysis-open-button').disabled = active;
         $('analysis-yasa-button').disabled = active || !state.summary || state.yasaRunning;
     }
@@ -73,7 +99,7 @@
         if (analysisId) await window.desktopAPI.closeAnalysis(analysisId).catch(() => {});
         $('analysis-workspace').hidden = true;
         $('analysis-empty').hidden = false;
-        $('analysis-empty').textContent = '从采集记录中选择一个会话开始分析。';
+        updateEmptyState('从已有采集记录中选择一个会话开始分析。', '选择记录后，这里会显示读取、滤波和质量分析进度。');
         $('analysis-export-button').disabled = true;
         $('analysis-yasa-button').disabled = true;
         setLoading(false);
@@ -92,7 +118,7 @@
         state.yasaRunning = false;
         $('analysis-workspace').hidden = true;
         $('analysis-empty').hidden = false;
-        $('analysis-empty').textContent = '正在读取并分析记录…';
+        updateEmptyState('正在读取并分析记录…', '正在读取 EDF/CSV、滤波并计算质量指标。', 1);
         $('analysis-yasa-button').disabled = true;
         $('analysis-export-button').disabled = true;
         state.opening = true;
@@ -120,7 +146,7 @@
         } catch (error) {
             state.opening = false;
             setLoading(false);
-            $('analysis-empty').textContent = `分析失败：${error.message}`;
+            updateEmptyState(`分析失败：${error.message}`, '请重新选择记录或查看日志。');
             toast(error.message, true);
             throw error;
         }
