@@ -76,3 +76,13 @@ test('analysis loading state exposes an inline progress bar in the empty view', 
     assert.match(ui, /analysis-empty-percent/);
     assert.match(css, /\.analysis-empty-progress\s*\{/);
 });
+
+test('analysis completion waits for the result transfer before showing 100 percent', () => {
+    const worker = read('analysis-worker.js');
+    const main = read('main.js');
+    const ui = read('src/analysis-ui.js');
+    assert.match(worker, /progress\('complete', 96/);
+    assert.match(worker, /includeEpochs: payload\.includeEpochs !== false/);
+    assert.match(main, /includeEpochs: false/);
+    assert.match(ui, /载入分析结果/);
+});

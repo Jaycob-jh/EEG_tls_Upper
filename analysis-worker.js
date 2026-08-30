@@ -223,23 +223,27 @@ async function openRecording(payload) {
     recording.integrity.usableEpochPercent = recording.epochs.length
         ? (recording.epochs.length - recording.integrity.rejectedEpochs) / recording.epochs.length * 100 : 0;
     computePhaseMetrics();
-    progress('complete', 100, '分析完成');
-    return summary();
+    // The worker has finished computing here, but the summary still needs to
+    // cross the worker/main/renderer boundary. Keep 100% for the UI only after
+    // that result has actually arrived in the analysis window.
+    progress('complete', 96, '计算完成，正在载入分析结果');
+    return summary({ includeEpochs: payload.includeEpochs !== false });
 }
 
-function summary() {
-    return {
+function summary({ includeEpochs = true } = {}) {
+    const result = {
         metadata: recording.metadata,
         sourceFile: recording.edfPath || recording.csvPath,
         sampleRateHz: recording.sampleRateHz,
         durationSeconds: recording.durationSeconds,
         integrity: recording.integrity,
         metrics: recording.metrics,
-        epochs: recording.epochs,
         segments: recording.segments,
         phaseMetrics: recording.phaseMetrics,
         warnings: recording.warnings,
     };
+    if (includeEpochs) result.epochs = recording.epochs;
+    return result;
 }
 
 function reportData() {
@@ -279,7 +283,7 @@ async function dispatch(action, payload) {
     if (action === 'segments') {
         recording.segments = Analysis.validateSegments(payload.segments, recording.durationSeconds);
         computePhaseMetrics();
-        return summary();
+        return summary({ includeEpochs: payload.includeEpochs !== false });
     }
     if (action === 'report') return reportData();
     throw new Error(`Unknown analysis action: ${action}`);

@@ -638,7 +638,9 @@ async function openAnalysis(sessionId, ownerWebContentsId = null) {
     });
     worker.on('exit', () => activeAnalyses.delete(analysisId));
     try {
-        const summary = await analysisRequest(entry, 'open', { directory, sessionId });
+        // The analysis window only needs metrics and phase summaries at first;
+        // epoch rows remain in the worker for the later report export.
+        const summary = await analysisRequest(entry, 'open', { directory, sessionId, includeEpochs: false });
         return { analysisId, ...summary };
     } catch (error) {
         await closeAnalysis(analysisId);
@@ -743,7 +745,7 @@ function registerIpc() {
     ipcMain.handle('analysis:open', (event, sessionId) => openAnalysis(sessionId, event.sender.id));
     ipcMain.handle('analysis:viewport', (_event, request) => analysisRequest(requireAnalysis(request.analysisId), 'viewport', request));
     ipcMain.handle('analysis:spectrogram', (_event, request) => analysisRequest(requireAnalysis(request.analysisId), 'spectrogram', request));
-    ipcMain.handle('analysis:segments', (_event, analysisId, segments) => analysisRequest(requireAnalysis(analysisId), 'segments', { segments }));
+    ipcMain.handle('analysis:segments', (_event, analysisId, segments) => analysisRequest(requireAnalysis(analysisId), 'segments', { segments, includeEpochs: false }));
     ipcMain.handle('analysis:export', (_event, analysisId) => exportAnalysisReport(analysisId));
     ipcMain.handle('analysis:yasa', (_event, sessionId) => runYasaStaging(sessionId));
     ipcMain.handle('analysis:close', (_event, analysisId) => closeAnalysis(analysisId));

@@ -31,7 +31,7 @@
         return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '--';
     }
 
-    function updateEmptyState(title, detail = '', percent = null) {
+    function updateEmptyState(title, detail = '', percent = null, loading = null) {
         const empty = $('analysis-empty');
         const titleNode = $('analysis-empty-title');
         const detailNode = $('analysis-empty-detail');
@@ -45,7 +45,8 @@
         titleNode.textContent = title;
         detailNode.textContent = detail;
         const hasProgress = percent !== null && percent !== undefined && Number.isFinite(Number(percent));
-        empty.dataset.loading = String(hasProgress);
+        const loadingState = loading === null ? hasProgress : Boolean(loading);
+        empty.dataset.loading = String(loadingState);
         progressNode.hidden = !hasProgress;
         percentNode.hidden = !hasProgress;
         const safePercent = hasProgress ? Math.max(0, Math.min(100, Number(percent))) : 0;
@@ -56,11 +57,17 @@
 
     function setLoading(active, label = '准备分析…', percent = 0) {
         const safePercent = Math.max(0, Math.min(100, Number(percent) || 0));
+        const waitingForResult = active && safePercent >= 100;
         $('analysis-progress').hidden = !active;
-        $('analysis-progress-label').textContent = label;
+        $('analysis-progress-label').textContent = waitingForResult ? '载入分析结果…' : label;
         $('analysis-progress-bar').style.width = `${safePercent}%`;
         $('analysis-progress').setAttribute('aria-valuenow', String(Math.round(safePercent)));
-        if (active) updateEmptyState(label, '正在处理当前采集记录，请稍候…', safePercent);
+        if (active) updateEmptyState(
+            waitingForResult ? '计算已完成' : label,
+            waitingForResult ? '正在载入分析结果，请稍候…' : '正在处理当前采集记录，请稍候…',
+            safePercent,
+            !waitingForResult,
+        );
         $('analysis-open-button').disabled = active;
         $('analysis-yasa-button').disabled = active || !state.summary || state.yasaRunning;
     }
