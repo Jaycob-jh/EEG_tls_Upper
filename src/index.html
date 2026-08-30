@@ -137,7 +137,7 @@
                         <div><p class="eyebrow">STAGE-TRIGGERED STIMULATION</p><h3>分期触发刺激协议</h3></div>
                         <label class="realtime-enable"><input type="checkbox" id="sleep-stimulus-enabled"> 启用协议</label>
                     </div>
-                    <div class="sleep-stimulus-warning">连续命中可自行设置：1 个 epoch 约 30 秒，2 个约 60 秒，依此类推。分期改变、上下文质量不通过、信号质量不通过或置信度不足会清零计数。闭环只接受当前因果候选，不使用约 5 分钟延迟的中心回顾输出；默认启用“验证模式”，只记录目标分期命中，不向设备发光。若目标选择 N3，还必须满足 δ 慢波证据下限。点击“全部停止”、停止 EEG、关闭实时分析或 BLE 断开都会解除协议；每次启动软件也需要重新启用。</div>
+                    <div class="sleep-stimulus-warning">连续命中可自行设置：1 个 epoch 约 30 秒，2 个约 60 秒，依此类推。分期改变、上下文质量不通过、信号质量不通过或置信度不足会清零计数。闭环只接受当前因果候选，不使用约 5 分钟延迟的中心回顾输出；默认启用“验证模式”，只记录目标分期命中，不向设备发光。N3 先经过保守后处理：因果输出默认要求高概率且连续 3 个 epoch，质量不合格或孤立 N3 会标为不可评分；下方 δ 项仅作为旧记录/未接入后处理时的兼容安全门。点击“全部停止”、停止 EEG、关闭实时分析或 BLE 断开都会解除协议；每次启动软件也需要重新启用。</div>
                     <div class="sleep-stimulus-form">
                         <fieldset class="sleep-stage-selector">
                             <legend>目标分期（可多选）</legend>
@@ -148,7 +148,7 @@
                             <label><input type="checkbox" name="sleep-stimulus-stage" value="REM"> REM</label>
                         </fieldset>
                         <label>置信度阈值 (%)<input id="sleep-stimulus-confidence" type="number" min="50" max="100" step="1" value="80"></label>
-                        <label>N3 慢波证据下限 (%)<input id="sleep-stimulus-delta" type="number" min="0" max="100" step="1" value="20"></label>
+                        <label>N3 兼容 δ 安全门 (%)<input id="sleep-stimulus-delta" type="number" min="0" max="100" step="1" value="20" title="仅用于未带 N3 后处理标记的旧结果；当前实时结果由保守 N3 后处理负责确认"></label>
                         <label>连续命中 (epoch)<input id="sleep-stimulus-consecutive" type="number" min="1" max="10" step="1" value="2"></label>
                         <label>光刺激通道<select id="sleep-stimulus-channel"><option value="1">通道 1</option><option value="2">通道 2</option></select></label>
                         <label>频率 (Hz)<input id="sleep-stimulus-frequency" type="number" min="1" max="100" step="1" value="10"></label>
@@ -261,6 +261,7 @@
     <script src="core.js"></script>
     <script src="transport.js"></script>
     <script src="realtime-sleep.js"></script>
+    <script src="sleep-stage-postprocess.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

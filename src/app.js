@@ -4,6 +4,7 @@
     const SDK = window.BrainLume;
     const Core = window.BrainLumeDesktopCore;
     const Sleep = window.BrainLumeRealtimeSleep;
+    const SleepPostprocess = window.BrainLumeSleepStagePostprocess;
     const { BleTransport } = window.BrainLumeBle;
     const $ = id => document.getElementById(id);
     const BLE_CONNECT_ATTEMPTS = 6;
@@ -77,6 +78,7 @@
         sleepInferencePromise: Promise.resolve(),
         sleepInferenceGeneration: 0,
         sleepProbabilitySmoothers: { center: null, causal: null },
+        sleepN3Postprocessors: { center: null, causal: null },
         sleepHistory: [],
         sleepStimulusProtocol: loadSleepStimulusProtocol(),
         sleepStimulusGate: null,
@@ -154,6 +156,17 @@
         return String(value ?? '').replace(/[&<>'"]/g, character => ({
             '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
         })[character]);
+    }
+
+    function sleepStageLabel(stage) {
+        return String(stage) === (SleepPostprocess?.UNKNOWN_STAGE || 'UNKNOWN') ? '不可评分' : String(stage || '--');
+    }
+
+    function n3StatusLabel(status) {
+        return ({
+            trusted: 'N3 已确认', pending: 'N3 待连续确认', pending_exit: 'N3 退出待确认',
+            suppressed: 'N3 已抑制', inactive: 'N3 未命中', unavailable: '后处理不可用',
+        })[String(status || '')] || '';
     }
 
     function protocolErrorContext(error) {
@@ -283,6 +296,7 @@
         state.sleepModelFilter?.reset();
         state.sleepStimulusGate?.reset();
         Object.values(state.sleepProbabilitySmoothers).forEach(smoother => smoother?.reset());
+        Object.values(state.sleepN3Postprocessors).forEach(processor => processor?.reset());
         state.sleepEpochLightChannels.clear();
         if (clearHistory) state.sleepHistory = [];
         $('realtime-epoch').textContent = '0 epoch';
@@ -298,7 +312,7 @@
 
     function renderSleepHistory() {
         $('realtime-history').innerHTML = state.sleepHistory.length ? state.sleepHistory.map(item => `<tr>
-            <td>${escapeHtml(item.outputTime)}</td><td>${item.epochIndex + 1}</td><td title="${item.inferenceMode === 'causal' ? '当前因果输出，用于实验性闭环候选' : '训练一致中心输出，用于回顾性验证'}"><span class="state-badge ${item.quality.ok ? '' : 'off'}">${escapeHtml(item.stage)}</span><small class="stage-source">${item.inferenceMode === 'causal' ? '当前候选' : '中心验证'}</small></td>
+            <td>${escapeHtml(item.outputTime)}</td><td>${item.epochIndex + 1}</td><td title="${item.inferenceMode === 'causal' ? '当前因果输出，用于实验性闭环候选' : '训练一致中心输出，用于回顾性验证'}${item.n3Reason ? ` · ${item.n3Reason}` : ''}"><span class="state-badge ${item.quality.ok && item.stage !== (SleepPostprocess?.UNKNOWN_STAGE || 'UNKNOWN') ? '' : 'off'}">${escapeHtml(sleepStageLabel(item.stage))}</span><small class="stage-source">${item.inferenceMode === 'causal' ? '当前候选' : '中心验证'}${n3StatusLabel(item.n3Status) ? ` · ${n3StatusLabel(item.n3Status)}` : ''}${item.modelStage && item.modelStage !== item.stage ? ` · 模型 ${sleepStageLabel(item.modelStage)}` : ''}</small></td>
             <td>${(item.confidence * 100).toFixed(1)}%</td><td>${item.quality.ok ? '通过' : escapeHtml(item.quality.reason)}</td>
             <td>${item.stimulusShadow ? '验证命中（未发光）' : (item.lightChannels?.length ? `CH${item.lightChannels.join('、CH')} 开启` : '关闭')}</td>
             ${item.probabilities.map(value => `<td>${(value * 100).toFixed(1)}%</td>`).join('')}
@@ -482,6 +496,7 @@
             stage: item.stage,
             confidence: item.confidence,
             quality: item.quality,
+            n3Postprocessed: item.n3Postprocessed === true,
         });
         if (decision.triggered) {
             item.stimulusShadow = state.sleepStimulusProtocol.shadowMode;
@@ -493,12 +508,13 @@
             n3_delta_missing: 'N3 慢波证据缺失，连续计数已清零',
             n3_delta_weak: 'N3 慢波证据不足，连续计数已清零',
             poor_quality: '质量未通过，连续计数已清零',
-            stage_not_selected: `等待目标分期 · 当前 ${item.stage}`,
+            stage_not_selected: `等待目标分期 · 当前 ${sleepStageLabel(item.stage)}`,
             low_confidence: `置信度不足 · ${(item.confidence * 100).toFixed(1)}%`,
             stimulus_active: '刺激进行中',
             cooldown: '冷却中',
             duplicate_epoch: '已忽略重复 epoch',
             context_quality: '上下文质量未通过',
+            n3_not_trusted: `N3 尚未确认 · ${n3StatusLabel(item.n3Status) || '等待后处理'}`,
         };
         if (decision.reason === 'awaiting_consecutive') {
             setSleepStimulusStatus(`${decision.stage} 连续命中 ${decision.matchedCount} / ${decision.requiredCount}`);
@@ -522,35 +538,70 @@
                 margin: null,
                 rawProbabilities: result.probabilities,
             };
-            const confidence = smoothed.confidence;
-            const stage = Sleep.STAGES[smoothed.stageIndex] || `Stage ${smoothed.stageIndex}`;
+            const modelConfidence = smoothed.confidence;
+            const modelStage = Sleep.STAGES[smoothed.stageIndex] || `Stage ${smoothed.stageIndex}`;
             const targetQuality = input.targetQuality || input.centerQuality || { ok: false, reason: 'missing_quality' };
             const delaySeconds = Number(input.modelDelaySeconds) || 0;
+            const contextReady = input.historyEpochs >= input.temporalContext && input.contextQualityOk === true;
+            const n3Postprocessor = state.sleepN3Postprocessors[inferenceMode];
+            const postprocessed = n3Postprocessor ? n3Postprocessor.update({
+                epochIndex: input.classifiedEpochIndex,
+                rawStage: modelStage,
+                rawProbabilities: smoothed.probabilities,
+                quality: targetQuality,
+                deltaRatio: targetQuality.deltaRatio,
+                contextReady,
+                contextQualityOk: input.contextQualityOk === true,
+                controlEligible: input.controlEligible === true,
+            }) : {
+                stage: modelStage,
+                confidence: modelConfidence,
+                n3Status: 'unavailable',
+                reason: 'postprocessor_unavailable',
+                controlEligible: false,
+                controlEligibilityReason: 'postprocessor_unavailable',
+                n3Evidence: null,
+            };
+            const stage = postprocessed.stage || modelStage;
+            const confidence = Number.isFinite(Number(postprocessed.confidence))
+                ? Number(postprocessed.confidence) : modelConfidence;
+            // N3 must pass the dedicated postprocessor before it can enter the
+            // closed-loop gate. Other selected stages keep the existing causal
+            // eligibility semantics; the N3 postprocessor is not a blanket
+            // disable switch for W/N1/N2/REM protocols.
+            const controlEligible = modelStage === 'N3' && n3Postprocessor
+                ? postprocessed.controlEligible === true
+                : input.controlEligible === true && targetQuality.ok === true;
             const item = {
                 outputTime: formatTime(), epochIndex: input.classifiedEpochIndex, stage, confidence,
                 probabilities: smoothed.probabilities, rawProbabilities: Array.from(result.probabilities, Number),
-                rawStage: Sleep.STAGES[result.stage] || `Stage ${result.stage}`,
+                rawStage: Sleep.STAGES[result.stage] || `Stage ${result.stage}`, modelStage,
+                modelConfidence, n3Status: postprocessed.n3Status, n3Reason: postprocessed.reason,
+                n3Evidence: postprocessed.n3Evidence, n3Postprocessed: postprocessed.n3Status === 'trusted',
                 probabilityMargin: smoothed.margin, quality: targetQuality,
                 inferenceMode, modelDelaySeconds: delaySeconds,
-                controlEligible: input.controlEligible === true,
-                controlEligibilityReason: input.controlEligibilityReason,
+                controlEligible,
+                controlEligibilityReason: postprocessed.controlEligibilityReason || input.controlEligibilityReason,
                 lightChannels: Array.from(input.lightChannels || []),
             };
             state.sleepHistory.unshift(item);
             state.sleepHistory.length = Math.min(state.sleepHistory.length, 120);
-            $('realtime-stage').textContent = targetQuality.ok ? stage : `${stage}（质量警告）`;
+            $('realtime-stage').textContent = targetQuality.ok ? sleepStageLabel(stage) : `${sleepStageLabel(stage)}（质量警告）`;
             $('realtime-stage-time').textContent = inferenceMode === 'center'
                 ? `目标 epoch ${input.classifiedEpochIndex + 1} · 中心输出 · 约 ${Math.round(delaySeconds / 60)} 分钟延迟`
                 : `目标 epoch ${input.classifiedEpochIndex + 1} · 当前因果输出 · 每 30 秒更新`;
             $('realtime-inference-state').textContent = inferenceMode === 'center'
-                ? `完成 · 中心输出 ${result.selectedOutputIndex + 1}/${input.temporalContext} · 回顾性验证`
-                : `完成 · 当前输出 ${result.selectedOutputIndex + 1}/${input.temporalContext} · 实验性闭环候选`;
+                ? `完成 · 中心输出 ${result.selectedOutputIndex + 1}/${input.temporalContext} · 回顾性验证 · N3 后处理`
+                : `完成 · 当前输出 ${result.selectedOutputIndex + 1}/${input.temporalContext} · 实验性闭环候选 · N3 后处理`;
             renderSleepProbabilities(smoothed.probabilities);
             renderSleepHistory();
             await audit('sleep_stage_inferred', {
                 epochIndex: input.classifiedEpochIndex, stage, confidence,
                 probabilities: smoothed.probabilities, rawProbabilities: item.rawProbabilities,
-                rawStage: item.rawStage, probabilityMargin: smoothed.margin, quality: targetQuality,
+                rawStage: item.rawStage, modelStage, modelConfidence,
+                n3Status: item.n3Status, n3Reason: item.n3Reason, n3Evidence: item.n3Evidence,
+                n3Postprocessed: item.n3Postprocessed,
+                probabilityMargin: smoothed.margin, quality: targetQuality,
                 outputIndex: result.selectedOutputIndex, historyEpochs: input.historyEpochs,
                 lightChannels: item.lightChannels, inferenceMode,
                 modelDelaySeconds: delaySeconds, controlEligible: item.controlEligible,
@@ -620,6 +671,10 @@
             center: new Sleep.SleepStageSmoother({ alpha: 0.5 }),
             causal: new Sleep.SleepStageSmoother({ alpha: 0.5 }),
         };
+        state.sleepN3Postprocessors = SleepPostprocess ? {
+            center: new SleepPostprocess.N3Postprocessor({ mode: 'center' }),
+            causal: new SleepPostprocess.N3Postprocessor({ mode: 'causal' }),
+        } : { center: null, causal: null };
         state.sleepStimulusGate = new Sleep.SleepStageStimulusGate(state.sleepStimulusProtocol);
         renderSleepStimulusProtocol();
         $('realtime-enabled').checked = state.realtimeEnabled;

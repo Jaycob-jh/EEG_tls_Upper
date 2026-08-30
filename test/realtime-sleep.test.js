@@ -176,6 +176,19 @@ test('sleep-stage stimulus gate triggers only after consecutive valid target epo
     assert.equal(trigger.shadowMode, true);
 });
 
+test('sleep-stage stimulus gate trusts an explicit conservative N3 postprocess result', () => {
+    const gate = new Sleep.SleepStageStimulusGate({
+        enabled: true, targetStages: ['N3'], minConfidence: 0.9,
+        consecutiveEpochs: 1, minN3DeltaRatio: 0.9,
+    });
+    const decision = gate.evaluate({
+        epochIndex: 1, stage: 'N3', confidence: 0.96,
+        quality: { ok: true }, n3Postprocessed: true,
+    }, 1_000);
+    assert.equal(decision.triggered, true);
+    assert.equal(decision.stage, 'N3');
+});
+
 test('sleep-stage stimulus gate rejects duplicate results, active stimulation and cooldown', () => {
     const gate = new Sleep.SleepStageStimulusGate({
         enabled: true,

@@ -22,6 +22,9 @@ function normalizeStagingEvent(event) {
     if (!Number.isInteger(epochIndex) || epochIndex < 0) return null;
     const quality = event.quality && typeof event.quality === 'object' ? event.quality : {};
     const stage = String(event.stage || event.rawStage || '--').slice(0, 40);
+    const modelStage = String(event.modelStage || event.rawStage || '').slice(0, 40);
+    const n3Status = String(event.n3Status || '').slice(0, 32);
+    const n3Reason = String(event.n3Reason || '').slice(0, 100);
     const mode = String(event.inferenceMode || 'unknown').slice(0, 24);
     const lightChannels = Array.isArray(event.lightChannels)
         ? [...new Set(event.lightChannels.map(Number).filter(channel => channel === 1 || channel === 2))]
@@ -32,6 +35,10 @@ function normalizeStagingEvent(event) {
         ts: typeof event.ts === 'string' ? event.ts : null,
         epochIndex,
         stage: STAGING_STAGES.has(stage) ? stage : stage || '--',
+        modelStage: STAGING_STAGES.has(modelStage) ? modelStage : modelStage || null,
+        n3Status: n3Status || null,
+        n3Reason: n3Reason || null,
+        n3Postprocessed: event.n3Postprocessed === true,
         confidence: confidence === null ? null : clamp(confidence),
         probabilities,
         quality: {

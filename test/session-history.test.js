@@ -6,7 +6,7 @@ const { parseSessionStagingHistory } = require('../src/session-history');
 
 test('session staging history keeps both inference modes and sorts by epoch', () => {
     const result = parseSessionStagingHistory([
-        JSON.stringify({ ts: '2026-08-30T01:00:02+08:00', action: 'sleep_stage_inferred', epochIndex: 1, stage: 'N2', confidence: .8, probabilities: [0, 0, .8, .1, .1], inferenceMode: 'causal', modelDelaySeconds: 0, quality: { ok: true }, lightChannels: [2] }),
+        JSON.stringify({ ts: '2026-08-30T01:00:02+08:00', action: 'sleep_stage_inferred', epochIndex: 1, stage: 'N2', modelStage: 'N3', n3Status: 'suppressed', n3Reason: 'n3_probability_below_enter', n3Postprocessed: false, confidence: .8, probabilities: [0, 0, .8, .1, .1], inferenceMode: 'causal', modelDelaySeconds: 0, quality: { ok: true }, lightChannels: [2] }),
         JSON.stringify({ ts: '2026-08-30T01:00:01+08:00', action: 'sleep_stage_inferred', epochIndex: 0, stage: 'W', confidence: .9, probabilities: [ .9, .02, .02, .03, .03 ], inferenceMode: 'center', modelDelaySeconds: 300, quality: { ok: false, reason: 'low_quality' } }),
         JSON.stringify({ ts: '2026-08-30T01:00:03+08:00', action: 'unrelated' }),
         '{not-json}',
@@ -17,6 +17,9 @@ test('session staging history keeps both inference modes and sorts by epoch', ()
     assert.deepEqual(result.summary.modeCounts, { center: 1, causal: 1 });
     assert.equal(result.records[0].modelDelaySeconds, 300);
     assert.deepEqual(result.records[1].lightChannels, [2]);
+    assert.equal(result.records[1].modelStage, 'N3');
+    assert.equal(result.records[1].n3Status, 'suppressed');
+    assert.equal(result.records[1].n3Postprocessed, false);
     assert.equal(result.ignoredLines, 1);
 });
 

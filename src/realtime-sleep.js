@@ -183,7 +183,11 @@
             if (!this.protocol.targetStages.includes(stage)) return this.reject('stage_not_selected');
             const confidence = Number(result.confidence);
             if (!Number.isFinite(confidence) || confidence < this.protocol.minConfidence) return this.reject('low_confidence');
-            if (stage === 'N3') {
+            // The N3 postprocessor is the primary conservative evidence gate.
+            // Keep the legacy delta-ratio check for callers that do not provide
+            // an explicit postprocessed N3 result, so older integrations remain
+            // safe and backwards compatible.
+            if (stage === 'N3' && result.n3Postprocessed !== true) {
                 const deltaRatio = Number(result.quality?.deltaRatio);
                 if (!Number.isFinite(deltaRatio)) return this.reject('n3_delta_missing');
                 if (deltaRatio < this.protocol.minN3DeltaRatio) return this.reject('n3_delta_weak');

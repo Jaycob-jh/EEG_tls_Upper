@@ -268,6 +268,17 @@
         return Number.isFinite(Number(value)) ? `${number(Number(value) * 100, 1)}%` : '--';
     }
 
+    function stagingStageLabel(stage) {
+        return String(stage) === 'UNKNOWN' ? '不可评分' : String(stage || '--');
+    }
+
+    function stagingN3StatusLabel(status) {
+        return ({
+            trusted: 'N3 已确认', pending: 'N3 待连续确认', pending_exit: 'N3 退出待确认',
+            suppressed: 'N3 已抑制', inactive: 'N3 未命中', unavailable: '后处理不可用',
+        })[String(status || '')] || '';
+    }
+
     function renderOnlineStagingHistory() {
         const stateLabel = $('analysis-online-staging-state');
         const summaryNode = $('analysis-online-staging-summary');
@@ -323,10 +334,15 @@
             const probabilities = Array.from({ length: 5 }, (_, index) => `<td>${percentage(record.probabilities?.[index])}</td>`).join('');
             const quality = record.quality?.ok === true ? '通过' : escapeHtml(record.quality?.reason || '未通过');
             const delay = record.modelDelaySeconds > 0 ? `约 ${duration(record.modelDelaySeconds)}` : '0s';
+            const stageDetail = [
+                record.inferenceMode === 'causal' ? '当前候选' : record.inferenceMode === 'center' ? '中心验证' : '未知模式',
+                stagingN3StatusLabel(record.n3Status),
+                record.modelStage && record.modelStage !== record.stage ? `模型 ${stagingStageLabel(record.modelStage)}` : '',
+            ].filter(Boolean).join(' · ');
             return `<tr>
                 <td>${escapeHtml(formatDate(record.ts))}</td>
                 <td>${record.epochIndex + 1}</td>
-                <td class="stage-cell"><span class="state-badge ${record.quality?.ok === true ? '' : 'off'}">${escapeHtml(record.stage)}</span><small>${record.inferenceMode === 'causal' ? '当前候选' : record.inferenceMode === 'center' ? '中心验证' : '未知模式'}</small></td>
+                <td class="stage-cell" title="${escapeHtml(record.n3Reason || '')}"><span class="state-badge ${record.quality?.ok === true && record.stage !== 'UNKNOWN' ? '' : 'off'}">${escapeHtml(stagingStageLabel(record.stage))}</span><small>${escapeHtml(stageDetail)}</small></td>
                 <td>${percentage(record.confidence)}</td>
                 <td class="${record.quality?.ok === true ? '' : 'quality-warning'}">${quality}</td>
                 <td class="${modeClass}">${onlineStagingModeLabel(record.inferenceMode)}</td>
