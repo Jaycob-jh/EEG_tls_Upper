@@ -40,6 +40,19 @@ function configureApplicationMenu() {
             submenu: [
                 { role: 'about', label: '关于曹操' },
                 { type: 'separator' },
+                {
+                    label: '隐藏当前窗口', accelerator: 'Command+H',
+                    click: () => { const window = getFocusedAppWindow(); if (window) window.hide(); },
+                },
+                {
+                    label: '显示全部窗口', accelerator: 'Command+Option+H',
+                    click: () => {
+                        for (const window of [mainWindow, analysisWindow]) {
+                            if (window && !window.isDestroyed()) window.show();
+                        }
+                    },
+                },
+                { type: 'separator' },
                 { role: 'quit', label: '退出曹操' },
             ],
         });
@@ -57,6 +70,7 @@ function configureApplicationMenu() {
             { role: 'quit', label: '退出' },
         ],
     });
+    if (process.platform === 'darwin') template.push({ role: 'windowMenu' });
     Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
@@ -225,6 +239,7 @@ function createWindow() {
         });
     }
     mainWindow.on('closed', () => {
+        if (analysisWindow && !analysisWindow.isDestroyed()) analysisWindow.close();
         if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
         mainWindow = null;
     });
@@ -292,7 +307,6 @@ async function openAnalysisWindow(sessionId) {
     }
 
     const windowRef = new BrowserWindow({
-        parent: mainWindow,
         modal: false,
         show: false,
         width: 1380,
@@ -789,7 +803,15 @@ app.whenReady().then(async () => {
     configureApplicationMenu();
     registerIpc();
     if (debugCliMode) createDebugWindow(); else createWindow();
-    app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+    app.on('activate', () => {
+        const windows = [mainWindow, analysisWindow].filter(window => window && !window.isDestroyed());
+        if (!windows.length) {
+            createWindow();
+            return;
+        }
+        for (const window of windows) window.show();
+        (mainWindow && !mainWindow.isDestroyed() ? mainWindow : windows[0]).focus();
+    });
 });
 
 app.on('before-quit', async event => {

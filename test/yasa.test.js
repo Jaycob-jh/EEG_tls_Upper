@@ -57,6 +57,12 @@ test('records page opens a non-modal analysis window and exposes useful native f
     assert.match(ui, /state\.opening/);
     assert.match(main, /function configureApplicationMenu()/);
     assert.match(main, /analysis-window:open/);
+    assert.match(main, /label: '隐藏当前窗口'/);
+    assert.match(main, /accelerator: 'Command\+H'/);
+    assert.match(main, /if \(window\) window\.hide\(\)/);
+    assert.doesNotMatch(main, /parent:\s*mainWindow/);
+    assert.match(main, /role: 'windowMenu'/);
+    assert.match(main, /for \(const window of windows\) window\.show\(\)/);
     assert.match(main, /modal: false/);
     assert.match(main, /analysis-preload\.js/);
     assert.match(read('analysis-preload.js'), /analysis:viewport/);
