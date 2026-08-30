@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('desktopAPI', {
     listSessions: () => ipcRenderer.invoke('sessions:list'),
+    loadSessionStagingHistory: sessionId => ipcRenderer.invoke('session:staging-history', sessionId),
     openAnalysis: sessionId => ipcRenderer.invoke('analysis:open', sessionId),
     requestAnalysisViewport: request => ipcRenderer.invoke('analysis:viewport', request),
     requestAnalysisSpectrogram: request => ipcRenderer.invoke('analysis:spectrogram', request),

@@ -39,6 +39,14 @@
         </div>
         <div class="analysis-workspace" id="analysis-workspace" hidden>
             <div class="analysis-metrics" id="analysis-kpis"></div>
+            <section class="analysis-section online-staging-section">
+                <div class="section-heading compact">
+                    <div><p class="eyebrow">ONLINE STAGING HISTORY</p><h3>采集时在线分期记录</h3></div>
+                    <div class="button-row"><span class="analysis-yasa-state" id="analysis-online-staging-state">尚未读取</span><button type="button" class="button secondary" id="analysis-online-staging-refresh" disabled>重新读取</button></div>
+                </div>
+                <div class="analysis-yasa-summary" id="analysis-online-staging-summary">选择采集记录后，将读取该记录在采集期间保存的在线分期结果。</div>
+                <div class="analysis-table-wrap"><table class="analysis-table online-staging-table"><thead><tr><th>输出时间</th><th>Epoch</th><th>分期</th><th>置信度</th><th>质量</th><th>推理模式</th><th>模型延迟</th><th>光刺激</th><th>W</th><th>N1</th><th>N2</th><th>N3</th><th>REM</th></tr></thead><tbody id="analysis-online-staging-body"><tr><td colspan="13"><div class="empty-state">尚未读取在线分期记录</div></td></tr></tbody></table></div>
+            </section>
             <section class="analysis-section yasa-section">
                 <div class="section-heading compact">
                     <div><p class="eyebrow">YASA OFFLINE VALIDATION</p><h3>YASA 离线睡眠分期复核</h3></div>

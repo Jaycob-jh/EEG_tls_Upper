@@ -196,6 +196,13 @@ body.analysis-window-body { background: var(--bg); }
 .analysis-yasa-stat { min-width: 0; padding: 10px 12px; background: #f5f8fa; border-left: 3px solid var(--blue); }
 .analysis-yasa-stat span, .analysis-yasa-stat small { display: block; color: var(--muted); }
 .analysis-yasa-stat strong { display: block; margin: 4px 0 2px; color: var(--blue); font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.online-staging-table th, .online-staging-table td { font-variant-numeric: tabular-nums; }
+.online-staging-table .stage-cell { min-width: 78px; }
+.online-staging-table .stage-cell small { display: block; margin-top: 2px; color: var(--muted); font-size: 9px; }
+.online-staging-table .quality-warning { color: var(--amber); }
+.online-staging-table .mode-center { color: #7c5ab5; }
+.online-staging-table .mode-causal { color: var(--green); }
+.online-staging-section .button-row { align-items: center; }
 .analysis-yasa-files { padding: 9px 12px; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
 .analysis-yasa-section .analysis-warnings { border-top: 1px solid var(--border); }
 .analysis-segments { display: grid; gap: 8px; padding: 12px; border-bottom: 1px solid var(--border); }

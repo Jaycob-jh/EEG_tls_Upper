@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('desktopAPI', {
     appendSessionEvent: (id, record) => ipcRenderer.invoke('session:event', id, record),
     stopSession: (id, status, reason) => ipcRenderer.invoke('session:stop', id, status, reason),
     listSessions: () => ipcRenderer.invoke('sessions:list'),
+    loadSessionStagingHistory: sessionId => ipcRenderer.invoke('session:staging-history', sessionId),
     openAnalysisWindow: sessionId => ipcRenderer.invoke('analysis-window:open', sessionId),
     closeAnalysisWindow: () => ipcRenderer.invoke('analysis-window:close'),
     openAnalysis: sessionId => ipcRenderer.invoke('analysis:open', sessionId),

@@ -8,6 +8,7 @@
         viewport: null, requestSerial: 0, drag: null, initialized: false, opening: false,
         openingSerial: 0, openingAnalysisId: null, openingWatchdog: null,
         spectrogram: null, spectrogramSerial: 0, yasa: null, yasaRunning: false,
+        onlineStaging: null, onlineStagingLoading: false, onlineStagingError: null, onlineStagingSerial: 0,
     };
 
     function escapeHtml(value) {
@@ -95,6 +96,7 @@
         );
         $('analysis-open-button').disabled = active;
         $('analysis-yasa-button').disabled = active || !state.summary || state.yasaRunning;
+        $('analysis-online-staging-refresh').disabled = active || !state.summary;
     }
 
     function toast(message, error = false) {
@@ -130,6 +132,10 @@
         state.spectrogram = null;
         state.yasa = null;
         state.yasaRunning = false;
+        state.onlineStaging = null;
+        state.onlineStagingLoading = false;
+        state.onlineStagingError = null;
+        state.onlineStagingSerial += 1;
         state.requestSerial += 1;
         state.spectrogramSerial += 1;
         if (analysisId) await window.desktopAPI.closeAnalysis(analysisId).catch(() => {});
@@ -154,6 +160,10 @@
         state.viewport = null;
         state.yasa = null;
         state.yasaRunning = false;
+        state.onlineStaging = null;
+        state.onlineStagingLoading = false;
+        state.onlineStagingError = null;
+        state.onlineStagingSerial += 1;
         $('analysis-workspace').hidden = true;
         $('analysis-empty').hidden = false;
         updateEmptyState('正在读取并分析记录…', '正在读取 EDF/CSV、滤波并计算质量指标。', 1);
@@ -186,7 +196,9 @@
             // The summary is the first useful result. The two visualizations
             // are independent follow-up requests, so they should not block
             // the page from becoming usable one after another.
-            void Promise.allSettled([requestViewport(), requestSpectrogram()]);
+            void Promise.allSettled([
+                requestViewport(), requestSpectrogram(), loadOnlineStagingHistory(sessionId),
+            ]);
             return result;
         } catch (error) {
             if (openingSerial !== state.openingSerial) return null;
@@ -231,12 +243,119 @@
             `<tr><th>${escapeHtml(band.label)}</th><td>${number(band.absolute, 4)} µV²</td><td>${number(band.relativePercent, 2)}%</td></tr>`).join('');
         renderSegments();
         renderPhaseMetrics();
+        renderOnlineStagingHistory();
         renderYasa();
         const warnings = summary.warnings || [];
         $('analysis-warnings').hidden = warnings.length === 0;
         $('analysis-warnings').textContent = warnings.join('\n');
         $('analysis-wave-title').textContent = `CH${summary.metadata.selectedChannel || 2} · ${state.source === 'raw' ? '原始' : '滤波后'}波形`;
         document.querySelectorAll('#analysis-source-toggle button').forEach(button => button.classList.toggle('active', button.dataset.source === state.source));
+    }
+
+    function onlineStagingModeLabel(mode) {
+        return mode === 'causal' ? '当前因果' : mode === 'center' ? '中心回顾' : `未知（${mode || '--'}）`;
+    }
+
+    function onlineStagingLightLabel(record) {
+        if (record.stimulusShadow) return '验证命中（未发光）';
+        if (record.inferenceMode === 'center') return '目标 epoch 未绑定';
+        return record.lightChannels?.length
+            ? `${record.lightChannels.map(channel => `CH${channel}`).join('、')} 开启`
+            : '关闭';
+    }
+
+    function percentage(value) {
+        return Number.isFinite(Number(value)) ? `${number(Number(value) * 100, 1)}%` : '--';
+    }
+
+    function renderOnlineStagingHistory() {
+        const stateLabel = $('analysis-online-staging-state');
+        const summaryNode = $('analysis-online-staging-summary');
+        const body = $('analysis-online-staging-body');
+        if (!stateLabel || !summaryNode || !body) return;
+        if (state.onlineStagingLoading) {
+            stateLabel.textContent = '读取中…';
+            summaryNode.textContent = '正在读取该采集记录的 events.jsonl；不会修改原始 EEG 数据。';
+            body.innerHTML = '<tr><td colspan="13"><div class="empty-state">正在读取在线分期记录…</div></td></tr>';
+            return;
+        }
+        if (state.onlineStagingError) {
+            stateLabel.textContent = '读取失败';
+            summaryNode.textContent = state.onlineStagingError;
+            body.innerHTML = '<tr><td colspan="13"><div class="empty-state">无法读取在线分期记录</div></td></tr>';
+            return;
+        }
+        if (!state.onlineStaging) {
+            stateLabel.textContent = '尚未读取';
+            summaryNode.textContent = '选择采集记录后，将读取该记录在采集期间保存的在线分期结果。';
+            body.innerHTML = '<tr><td colspan="13"><div class="empty-state">尚未读取在线分期记录</div></td></tr>';
+            return;
+        }
+        const records = state.onlineStaging.records || [];
+        const summary = state.onlineStaging.summary || {};
+        if (!records.length) {
+            stateLabel.textContent = '无在线记录';
+            summaryNode.textContent = '该采集记录没有保存 sleep_stage_inferred 事件，可能是旧版本记录或采集时未启用实时分期。';
+            body.innerHTML = '<tr><td colspan="13"><div class="empty-state">这条记录没有可展示的在线分期结果</div></td></tr>';
+            return;
+        }
+        const centerCount = Number(summary.modeCounts?.center || 0);
+        const causalCount = Number(summary.modeCounts?.causal || 0);
+        const otherCount = Math.max(0, records.length - centerCount - causalCount);
+        const modeDelayLabel = mode => {
+            const delays = records.filter(record => record.inferenceMode === mode)
+                .map(record => Number(record.modelDelaySeconds)).filter(Number.isFinite);
+            if (!delays.length) return '无该模式输出';
+            const seconds = Math.max(...delays);
+            return seconds > 0 ? `延迟约 ${duration(seconds)}` : '延迟 0s';
+        };
+        const epochRange = Number.isInteger(summary.firstEpoch) && Number.isInteger(summary.lastEpoch)
+            ? `Epoch ${summary.firstEpoch + 1}–${summary.lastEpoch + 1}` : '--';
+        stateLabel.textContent = `${records.length.toLocaleString()} 条输出`;
+        summaryNode.innerHTML = [
+            ['在线输出', records.length.toLocaleString(), 'events.jsonl 已保存'],
+            ['覆盖 epoch', Number(summary.epochCount || 0).toLocaleString(), epochRange],
+            ['当前因果', causalCount.toLocaleString(), `用于实时候选 · ${modeDelayLabel('causal')}`],
+            ['中心回顾', centerCount.toLocaleString(), `回顾性输出 · ${modeDelayLabel('center')}${otherCount ? ` · 其他模式 ${otherCount} 条` : ''}`],
+        ].map(item => `<article class="analysis-yasa-stat"><span>${item[0]}</span><strong>${item[1]}</strong><small>${item[2]}</small></article>`).join('');
+        body.innerHTML = records.map(record => {
+            const modeClass = record.inferenceMode === 'center' ? 'mode-center' : record.inferenceMode === 'causal' ? 'mode-causal' : '';
+            const probabilities = Array.from({ length: 5 }, (_, index) => `<td>${percentage(record.probabilities?.[index])}</td>`).join('');
+            const quality = record.quality?.ok === true ? '通过' : escapeHtml(record.quality?.reason || '未通过');
+            const delay = record.modelDelaySeconds > 0 ? `约 ${duration(record.modelDelaySeconds)}` : '0s';
+            return `<tr>
+                <td>${escapeHtml(formatDate(record.ts))}</td>
+                <td>${record.epochIndex + 1}</td>
+                <td class="stage-cell"><span class="state-badge ${record.quality?.ok === true ? '' : 'off'}">${escapeHtml(record.stage)}</span><small>${record.inferenceMode === 'causal' ? '当前候选' : record.inferenceMode === 'center' ? '中心验证' : '未知模式'}</small></td>
+                <td>${percentage(record.confidence)}</td>
+                <td class="${record.quality?.ok === true ? '' : 'quality-warning'}">${quality}</td>
+                <td class="${modeClass}">${onlineStagingModeLabel(record.inferenceMode)}</td>
+                <td>${delay}</td>
+                <td>${escapeHtml(onlineStagingLightLabel(record))}</td>
+                ${probabilities}
+            </tr>`;
+        }).join('');
+    }
+
+    async function loadOnlineStagingHistory(sessionId) {
+        if (!sessionId) return;
+        const serial = ++state.onlineStagingSerial;
+        state.onlineStaging = null;
+        state.onlineStagingLoading = true;
+        state.onlineStagingError = null;
+        renderOnlineStagingHistory();
+        try {
+            const result = await window.desktopAPI.loadSessionStagingHistory(sessionId);
+            if (serial !== state.onlineStagingSerial) return;
+            state.onlineStaging = result;
+        } catch (error) {
+            if (serial !== state.onlineStagingSerial) return;
+            state.onlineStagingError = error.message;
+        } finally {
+            if (serial !== state.onlineStagingSerial) return;
+            state.onlineStagingLoading = false;
+            renderOnlineStagingHistory();
+        }
     }
 
     function renderYasa() {
@@ -572,6 +691,10 @@
             });
         }
         $('analysis-yasa-button').addEventListener('click',()=>runYasaStaging().catch(()=>{}));
+        $('analysis-online-staging-refresh').addEventListener('click',()=>{
+            const sessionId = state.summary?.metadata?.id || $('analysis-session-select').value;
+            loadOnlineStagingHistory(sessionId).catch(error => toast(error.message, true));
+        });
         $('analysis-export-button').addEventListener('click',async()=>{try{setLoading(true,'生成 PDF 与数据附件…',92);const result=await window.desktopAPI.exportAnalysisReport(state.analysisId);if(result)toast(`报告已导出：${result.pdfPath}`);}catch(error){toast(error.message,true);}finally{setLoading(false);}});
         $('analysis-source-toggle').addEventListener('click',event=>{const button=event.target.closest('[data-source]');if(!button||button.dataset.source===state.source)return;state.source=button.dataset.source;renderSummary();requestViewport();requestSpectrogram();});
         $('analysis-add-segment').addEventListener('click',()=>{if(!state.summary)return;const middle=(state.startSample+state.endSample)/2/state.summary.sampleRateHz;const length=Math.min(60,Math.max(1,state.summary.durationSeconds/10));state.summary.segments.push({id:`manual-${Date.now()}`,channel:1,preStartSec:Math.max(0,middle-length),startSec:middle,endSec:Math.min(state.summary.durationSeconds,middle+length),postEndSec:Math.min(state.summary.durationSeconds,middle+length*2),source:'manual'});renderSegments();});

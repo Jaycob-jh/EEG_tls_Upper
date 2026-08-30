@@ -18,6 +18,24 @@ test('analysis page exposes the independent YASA verification entry point', () =
     assert.match(preload, /runYasaStaging/);
 });
 
+test('analysis page exposes persisted online staging history for each selected session', () => {
+    const html = read('src/analysis.html');
+    const ui = read('src/analysis-ui.js');
+    const main = read('main.js');
+    const preload = read('preload.js');
+    const analysisPreload = read('analysis-preload.js');
+    assert.match(html, /ONLINE STAGING HISTORY/);
+    assert.match(html, /id="analysis-online-staging-body"/);
+    assert.match(html, /id="analysis-online-staging-refresh"/);
+    assert.match(ui, /loadOnlineStagingHistory/);
+    assert.match(ui, /当前因果/);
+    assert.match(ui, /中心回顾/);
+    assert.match(main, /ipcMain\.handle\('session:staging-history'/);
+    assert.match(main, /parseSessionStagingHistory/);
+    assert.match(preload, /loadSessionStagingHistory/);
+    assert.match(analysisPreload, /loadSessionStagingHistory/);
+});
+
 test('YASA integration preserves the raw-data boundary and removes the redundant channel button', () => {
     const html = read('src/index.html');
     const app = read('src/app.js');

@@ -10,6 +10,7 @@ const { spawn } = require('node:child_process');
 const { Worker } = require('node:worker_threads');
 const Core = require('./src/core');
 const AnalysisReport = require('./src/analysis-report');
+const { parseSessionStagingHistory } = require('./src/session-history');
 const { EdfWriter } = require('./src/edf');
 const BLE_DEVICE_NAME = 'BrainLume2.0C';
 const APP_ICON_PATH = path.join(__dirname, 'assets', 'cao-cao-icon-original.png');
@@ -458,6 +459,31 @@ async function listSessions() {
     return sessions.sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
 }
 
+async function readSessionStagingHistory(sessionId) {
+    const sessions = await listSessions();
+    const selected = sessions.find(item => item.id === sessionId);
+    if (!selected) throw new Error('未找到指定采集会话');
+    const paths = await ensureDataDirectories();
+    const root = path.resolve(paths.sessions);
+    const directory = path.resolve(selected.directory);
+    const relative = path.relative(root, directory);
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+        throw new Error('会话路径不在受控记录目录中');
+    }
+    let content = '';
+    try {
+        content = await fsp.readFile(path.join(directory, 'events.jsonl'), 'utf8');
+    } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+    }
+    return {
+        sessionId: selected.id,
+        startedAt: selected.startedAt || null,
+        endedAt: selected.endedAt || null,
+        ...parseSessionStagingHistory(content),
+    };
+}
+
 function runChildProcess(command, args) {
     return new Promise(resolve => {
         let stdout = '';
@@ -752,6 +778,7 @@ function registerIpc() {
     ipcMain.handle('session:event', (_event, id, record) => appendRecordingEvent(id, record));
     ipcMain.handle('session:stop', (_event, id, status, reason) => stopRecording(id, status, reason));
     ipcMain.handle('sessions:list', () => listSessions());
+    ipcMain.handle('session:staging-history', (_event, sessionId) => readSessionStagingHistory(sessionId));
     ipcMain.handle('analysis-window:open', (_event, sessionId) => openAnalysisWindow(sessionId));
     ipcMain.handle('analysis-window:close', event => {
         const window = BrowserWindow.fromWebContents(event.sender);
