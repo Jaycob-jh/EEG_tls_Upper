@@ -6,6 +6,7 @@
         sessions: [], analysisId: null, summary: null, source: 'filtered',
         startSample: 0, endSample: 1, yZoom: 1, yOffset: 0,
         viewport: null, requestSerial: 0, drag: null, initialized: false, opening: false,
+        openingSerial: 0, openingAnalysisId: null, openingWatchdog: null,
         spectrogram: null, spectrogramSerial: 0, yasa: null, yasaRunning: false,
     };
 
@@ -55,9 +56,28 @@
         percentNode.textContent = `${Math.round(safePercent)}%`;
     }
 
+    function clearOpeningWatchdog() {
+        if (state.openingWatchdog) clearTimeout(state.openingWatchdog);
+        state.openingWatchdog = null;
+    }
+
+    function armOpeningWatchdog(serial) {
+        clearOpeningWatchdog();
+        state.openingWatchdog = setTimeout(() => {
+            state.openingWatchdog = null;
+            if (!state.opening || serial !== state.openingSerial) return;
+            $('analysis-progress').hidden = false;
+            $('analysis-progress-label').textContent = '等待分析结果…';
+            $('analysis-progress-bar').style.width = '96%';
+            $('analysis-progress').setAttribute('aria-valuenow', '96');
+            updateEmptyState('分析结果返回较慢', '后台计算已完成最后阶段，但结果尚未返回。可再次点击“开始分析”重试；原始记录不会被修改。', 96, false);
+            $('analysis-open-button').disabled = false;
+        }, 15000);
+    }
+
     function setLoading(active, label = '准备分析…', percent = 0) {
         const safePercent = Math.max(0, Math.min(100, Number(percent) || 0));
-        const waitingForResult = active && safePercent >= 100;
+        const waitingForResult = active && safePercent >= 96;
         $('analysis-progress').hidden = !active;
         $('analysis-progress-label').textContent = waitingForResult ? '载入分析结果…' : label;
         $('analysis-progress-bar').style.width = `${safePercent}%`;
@@ -95,6 +115,10 @@
     async function closeAnalysisDialog() {
         const dialog = $('analysis-dialog');
         const analysisId = state.analysisId;
+        state.openingSerial += 1;
+        state.opening = false;
+        state.openingAnalysisId = null;
+        clearOpeningWatchdog();
         state.analysisId = null;
         state.summary = null;
         state.viewport = null;
@@ -117,8 +141,10 @@
 
     async function openSession(sessionId) {
         if (!sessionId) throw new Error('请先选择采集记录');
+        const openingSerial = ++state.openingSerial;
         if (state.analysisId) await window.desktopAPI.closeAnalysis(state.analysisId).catch(() => {});
         state.analysisId = null;
+        state.openingAnalysisId = null;
         state.summary = null;
         state.viewport = null;
         state.yasa = null;
@@ -130,10 +156,17 @@
         $('analysis-export-button').disabled = true;
         state.opening = true;
         setLoading(true, '读取采集数据…', 1);
+        armOpeningWatchdog(openingSerial);
         try {
             const result = await window.desktopAPI.openAnalysis(sessionId);
+            if (openingSerial !== state.openingSerial) {
+                if (result?.analysisId) await window.desktopAPI.closeAnalysis(result.analysisId).catch(() => {});
+                return null;
+            }
             state.analysisId = result.analysisId;
+            state.openingAnalysisId = null;
             state.opening = false;
+            clearOpeningWatchdog();
             state.summary = result;
             state.source = 'filtered';
             state.startSample = 0;
@@ -151,7 +184,10 @@
             void Promise.allSettled([requestViewport(), requestSpectrogram()]);
             return result;
         } catch (error) {
+            if (openingSerial !== state.openingSerial) return null;
             state.opening = false;
+            state.openingAnalysisId = null;
+            clearOpeningWatchdog();
             setLoading(false);
             updateEmptyState(`分析失败：${error.message}`, '请重新选择记录或查看日志。');
             toast(error.message, true);
@@ -538,7 +574,15 @@
         $('analysis-apply-segments').addEventListener('click',()=>applySegments().catch(error=>toast(error.message,true)));
         setupCanvas();
         setupSpectrogram();
-        window.desktopAPI.onAnalysisProgress(progress=>{if(!state.analysisId&&!state.opening)return;if(state.analysisId&&progress.analysisId!==state.analysisId)return;setLoading(true,progress.detail||progress.phase,progress.percent);});
+        window.desktopAPI.onAnalysisProgress(progress=>{
+            if (!state.analysisId && !state.opening) return;
+            if (state.analysisId && progress.analysisId !== state.analysisId) return;
+            if (state.opening && !state.analysisId) {
+                if (!state.openingAnalysisId) state.openingAnalysisId = progress.analysisId;
+                if (progress.analysisId !== state.openingAnalysisId) return;
+            }
+            setLoading(true, progress.detail || progress.phase, progress.percent);
+        });
     }
 
     function init() {

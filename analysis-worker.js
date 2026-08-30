@@ -226,20 +226,37 @@ async function openRecording(payload) {
     // The worker has finished computing here, but the summary still needs to
     // cross the worker/main/renderer boundary. Keep 100% for the UI only after
     // that result has actually arrived in the analysis window.
-    progress('complete', 96, '计算完成，正在载入分析结果');
-    return summary({ includeEpochs: payload.includeEpochs !== false });
+    progress('complete', 96, '计算完成，正在传输分析结果');
+    return summary({
+        includeEpochs: payload.includeEpochs !== false,
+        includeSpectra: payload.includeSpectra !== false,
+    });
 }
 
-function summary({ includeEpochs = true } = {}) {
+function withoutSpectrum(value) {
+    if (!value || typeof value !== 'object') return value;
+    const { psd: _psd, ...rest } = value;
+    return rest;
+}
+
+function phaseMetricsForSummary(includeSpectra) {
+    if (includeSpectra) return recording.phaseMetrics;
+    return recording.phaseMetrics.map(segment => ({
+        ...segment,
+        phases: Object.fromEntries(Object.entries(segment.phases || {}).map(([id, phase]) => [id, withoutSpectrum(phase)])),
+    }));
+}
+
+function summary({ includeEpochs = true, includeSpectra = true } = {}) {
     const result = {
         metadata: recording.metadata,
         sourceFile: recording.edfPath || recording.csvPath,
         sampleRateHz: recording.sampleRateHz,
         durationSeconds: recording.durationSeconds,
         integrity: recording.integrity,
-        metrics: recording.metrics,
+        metrics: includeSpectra ? recording.metrics : withoutSpectrum(recording.metrics),
         segments: recording.segments,
-        phaseMetrics: recording.phaseMetrics,
+        phaseMetrics: phaseMetricsForSummary(includeSpectra),
         warnings: recording.warnings,
     };
     if (includeEpochs) result.epochs = recording.epochs;
@@ -283,7 +300,10 @@ async function dispatch(action, payload) {
     if (action === 'segments') {
         recording.segments = Analysis.validateSegments(payload.segments, recording.durationSeconds);
         computePhaseMetrics();
-        return summary({ includeEpochs: payload.includeEpochs !== false });
+        return summary({
+            includeEpochs: payload.includeEpochs !== false,
+            includeSpectra: payload.includeSpectra !== false,
+        });
     }
     if (action === 'report') return reportData();
     throw new Error(`Unknown analysis action: ${action}`);

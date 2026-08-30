@@ -1373,16 +1373,31 @@
         return date;
     }
 
+    function formatClockTime(time) {
+        const value = String(time || '--:--:--');
+        return value.length >= 8 ? value.slice(0, 8) : value;
+    }
+
+    function formatScheduledDateTime(date) {
+        if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '--:--:--';
+        const now = new Date();
+        const dayDelta = Math.round((new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
+            - new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()) / 86400000);
+        const day = dayDelta === 0 ? '今天' : dayDelta === 1 ? '明天' : `${date.getMonth() + 1}月${date.getDate()}日`;
+        return `${day} ${formatClockTime(date.toTimeString().slice(0, 8))}`;
+    }
+
     function renderNextAction() {
         const selectablePlans = state.plans.filter(plan => plan.enabled);
         const relativeSelect = $('relative-plan-select');
         const previousSelection = relativeSelect.value;
         relativeSelect.innerHTML = selectablePlans.length
-            ? selectablePlans.map(plan => `<option value="${escapeHtml(plan.id)}">${escapeHtml(plan.name)} · ${plan.mode === 'relative' ? '相对' : '每日/立即'} · CH${plan.eegChannel}</option>`).join('')
+            ? selectablePlans.map(plan => `<option value="${escapeHtml(plan.id)}">${escapeHtml(plan.name)} · ${plan.mode === 'relative' ? '相对时间' : '每日定时'} · CH${plan.eegChannel}</option>`).join('')
             : '<option value="">暂无可用方案</option>';
         const relativeRun = planEngine.getRelativeStatus();
         if (relativeRun) relativeSelect.value = relativeRun.planId;
         else if (selectablePlans.some(plan => plan.id === previousSelection)) relativeSelect.value = previousSelection;
+        relativeSelect.title = '这里只选择要立即运行的方案，不会改变每日定时计划';
         relativeSelect.disabled = Boolean(relativeRun) || selectablePlans.length === 0;
         $('relative-plan-toggle').disabled = relativeRun ? false : (!state.connected || selectablePlans.length === 0);
         $('relative-plan-toggle').textContent = relativeRun ? '停止方案' : '立即运行';
@@ -1400,15 +1415,21 @@
         });
         const currentAction = planEngine.getCurrentAction();
         const actionLabel = action => ACTION_LABELS[action?.type] || action?.type || '方案动作';
+        const dailySource = plan => `每日方案「${plan.name}」`;
+        const runSource = plan => {
+            const sourcePlan = state.plans.find(item => item.id === relativeRun?.planId);
+            return sourcePlan ? `立即运行方案「${sourcePlan.name}」` : `相对方案「${plan.name}」`;
+        };
+        const operationIsActive = operation.operation !== 'idle' && operation.operation !== 'unknown';
 
         if (relativeRun) {
             const next = relativeRun.nextAction;
-            if (currentAction || (operation.operation !== 'idle' && operation.operation !== 'unknown')) {
+            if (currentAction || operationIsActive) {
                 const active = currentAction ? actionLabel(currentAction.action) : operation.label;
-                const detail = currentAction ? `${currentAction.plan.name} · 当前动作` : operation.detail;
-                $('next-action').innerHTML = `<span class="time">正在执行 · +${formatRelativeElapsed(relativeRun.elapsedSeconds)}</span><strong>${escapeHtml(active)}</strong><small>${escapeHtml(detail)}${next ? ` · 下一动作：${escapeHtml(actionLabel(next))} · 第 ${(next.offsetSeconds / 60).toFixed(1)} 分钟` : ''}</small>`;
+                const detail = currentAction ? `${runSource(currentAction.plan)} · 当前动作` : `手动操作 · ${operation.detail}`;
+                $('next-action').innerHTML = `<span class="time">正在执行 · 已运行 +${formatRelativeElapsed(relativeRun.elapsedSeconds)}</span><strong>${escapeHtml(active)}</strong><small>${escapeHtml(detail)}${next ? ` · 下一动作：${escapeHtml(actionLabel(next))} · 第 ${(next.offsetSeconds / 60).toFixed(1)} 分钟` : ''}</small>`;
             } else {
-                $('next-action').innerHTML = `<span class="time">下一动作 · +${formatRelativeElapsed(relativeRun.elapsedSeconds)}</span><strong>${escapeHtml(next ? actionLabel(next) : '正在结束')}</strong><small>${escapeHtml(relativeRun.plan.name)}${next ? ` · 第 ${(next.offsetSeconds / 60).toFixed(1)} 分钟` : ''} · 当前设备：${escapeHtml(operation.label)}</small>`;
+                $('next-action').innerHTML = `<span class="time">相对方案进行中 · 已运行 +${formatRelativeElapsed(relativeRun.elapsedSeconds)}</span><strong>${escapeHtml(next ? actionLabel(next) : '正在结束')}</strong><small>${escapeHtml(runSource(relativeRun.plan))}${next ? ` · 第 ${(next.offsetSeconds / 60).toFixed(1)} 分钟` : ''} · 当前设备：${escapeHtml(operation.label)}</small>`;
             }
             return;
         }
@@ -1417,14 +1438,14 @@
             (plan.actions || []).map(action => ({ plan, action, date: nextDateForTime(action.time) })));
         candidates.sort((a, b) => a.date - b.date);
         const next = candidates[0];
-        if (currentAction || (operation.operation !== 'idle' && operation.operation !== 'unknown')) {
+        if (currentAction || operationIsActive) {
             const active = currentAction ? actionLabel(currentAction.action) : operation.label;
-            const detail = currentAction ? `${currentAction.plan.name} · 当前动作` : operation.detail;
-            $('next-action').innerHTML = `<span class="time">正在执行</span><strong>${escapeHtml(active)}</strong><small>${escapeHtml(detail)}${next ? ` · 下一动作：${escapeHtml(actionLabel(next))} · ${escapeHtml(next.action.time.slice(0, 5))}` : ''}</small>`;
+            const detail = currentAction ? `${dailySource(currentAction.plan)} · 当前动作` : `手动操作 · ${operation.detail}`;
+            $('next-action').innerHTML = `<span class="time">当前设备操作</span><strong>${escapeHtml(active)}</strong><small>${escapeHtml(detail)}${next ? ` · 下次执行：${escapeHtml(formatScheduledDateTime(next.date))} · ${escapeHtml(actionLabel(next.action))}` : ''}</small>`;
         } else {
             $('next-action').innerHTML = next
-                ? `<span class="time">下一动作 · ${escapeHtml(next.action.time.slice(0, 5))}</span><strong>${escapeHtml(actionLabel(next.action))}</strong><small>${escapeHtml(next.plan.name)} · CH${next.plan.eegChannel} · 当前设备：${escapeHtml(operation.label)}</small>`
-                : '<span class="time">--:--</span><strong>暂无启用方案</strong><small>可在设备首页新建，或进入方案管理</small>';
+                ? `<span class="time">下次执行 · ${escapeHtml(formatScheduledDateTime(next.date))}</span><strong>${escapeHtml(actionLabel(next.action))}</strong><small>来源：${escapeHtml(dailySource(next.plan))} · CH${next.plan.eegChannel} · 当前设备：${escapeHtml(operation.label)}</small>`
+                : '<span class="time">暂无下次执行</span><strong>没有启用的每日定时方案</strong><small>“立即运行选择”只用于马上启动，不会改变每日调度</small>';
         }
     }
 

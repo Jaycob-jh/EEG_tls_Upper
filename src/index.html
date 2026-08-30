@@ -75,10 +75,10 @@
                     <aside class="run-panel">
                         <div class="section-heading compact"><div><p class="eyebrow">SCHEDULE CONTROL</p><h2>方案与控制</h2></div></div>
                         <div class="next-action" id="next-action" aria-live="polite">
-                            <span class="time">下一动作</span><strong>暂无启用方案</strong><small>设备当前动作与计划下一动作会分开显示</small>
+                            <span class="time">下次执行</span><strong>暂无启用每日计划</strong><small>每日定时、立即运行和手动操作会分别标明来源</small>
                         </div>
                         <div class="relative-plan-control">
-                            <label>选择并运行方案<select id="relative-plan-select"><option value="">暂无可用方案</option></select></label>
+                            <label>立即运行选择（不改变每日调度）<select id="relative-plan-select"><option value="">暂无可用方案</option></select></label>
                             <button class="button success" id="relative-plan-toggle" disabled>立即运行</button>
                         </div>
                         <div class="home-plan-actions" aria-label="首页方案操作">
@@ -87,7 +87,7 @@
                             <button class="button secondary" id="manage-plan-button-home" type="button">方案管理</button>
                         </div>
                         <div class="quick-actions">
-                            <button class="action-button" id="impedance-button"><span>Ω</span><div><strong>检测阻抗</strong><small>当前 EEG 通道</small></div></button>
+                            <button class="action-button" id="impedance-button"><span>Ω</span><div><strong>手动检测阻抗</strong><small>立即执行 · 不属于每日方案</small></div></button>
                             <button class="action-button" id="status-button"><span>i</span><div><strong>查询状态</strong><small>电量与运行状态</small></div></button>
                             <button class="action-button danger-soft" id="safe-stop-button"><span>■</span><div><strong>全部停止</strong><small>光刺激与 EEG</small></div></button>
                         </div>
@@ -97,7 +97,7 @@
                 <details class="home-plan-manager" id="home-plan-manager">
                     <summary><span><p class="eyebrow">SCHEDULE AUTOMATION</p><strong>方案管理（CH2 固定）</strong><small>在设备首页创建、编辑、启用或停用采集与刺激时间轴</small></span><span class="details-chevron" aria-hidden="true">⌄</span></summary>
                     <div class="home-plan-manager-body">
-                        <div class="home-plan-manager-heading"><div class="notice">每日方案按本机时钟执行；相对方案从设备首页点击“立即运行”的瞬间计时。所有方案 EEG 导联固定为 CH2 双极差分。</div><button class="button primary" id="new-plan-button" type="button">新建方案</button></div>
+                        <div class="home-plan-manager-heading"><div class="notice">每日方案按本机时钟执行；相对方案从设备首页点击“立即运行”的瞬间计时。这里的“立即运行选择”只决定现在启动哪套方案，不会更改上方的每日下一次执行；要更换每日调度，请在下方启用或停用对应方案。所有方案 EEG 导联固定为 CH2 双极差分。</div><button class="button primary" id="new-plan-button" type="button">新建方案</button></div>
                         <div class="plan-list" id="plan-list"></div>
                     </div>
                 </details>

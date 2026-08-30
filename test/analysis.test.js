@@ -102,6 +102,12 @@ test('analysis worker reads a session and computes phase metrics', async () => {
         assert.equal(summary.segments.length, 1);
         assert.equal(summary.phaseMetrics.length, 1);
         assert.equal(summary.epochs.length, 1);
+        const compact = await workerRequest(worker, 'open', {
+            directory, sessionId: metadata.id, includeEpochs: false, includeSpectra: false,
+        });
+        assert.equal(compact.epochs, undefined);
+        assert.equal(compact.metrics.psd, undefined);
+        assert.equal(compact.phaseMetrics[0].phases.before.psd, undefined);
         const viewport = await workerRequest(worker, 'viewport', { source: 'filtered', startSample: 0, endSample: values.length, pixelWidth: 300 });
         assert.equal(viewport.mode, 'envelope');
         const spectrogram = await workerRequest(worker, 'spectrogram', { source: 'filtered', windowSeconds: 2, maxHz: 45, maxTimeBins: 80 });

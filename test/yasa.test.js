@@ -83,6 +83,19 @@ test('analysis completion waits for the result transfer before showing 100 perce
     const ui = read('src/analysis-ui.js');
     assert.match(worker, /progress\('complete', 96/);
     assert.match(worker, /includeEpochs: payload\.includeEpochs !== false/);
+    assert.match(worker, /includeSpectra: payload\.includeSpectra !== false/);
     assert.match(main, /includeEpochs: false/);
+    assert.match(main, /includeSpectra: false/);
     assert.match(ui, /载入分析结果/);
+    assert.match(ui, /分析结果返回较慢/);
+});
+
+test('home schedule wording separates daily execution, immediate runs and manual impedance checks', () => {
+    const html = read('src/index.html');
+    const app = read('src/app.js');
+    assert.match(html, /下次执行/);
+    assert.match(html, /立即运行选择（不改变每日调度）/);
+    assert.match(html, /手动检测阻抗/);
+    assert.match(app, /function formatScheduledDateTime/);
+    assert.match(app, /来源：\$\{escapeHtml\(dailySource\(next\.plan\)\)\}/);
 });
