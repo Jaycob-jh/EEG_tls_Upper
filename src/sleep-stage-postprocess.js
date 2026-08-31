@@ -150,6 +150,11 @@
         return index;
     }
 
+    function confidenceForStage(stage, probabilities) {
+        const index = STAGES.indexOf(stage);
+        return index >= 0 ? probabilities[index] : 0;
+    }
+
     class N3Postprocessor {
         constructor(options = {}) {
             this.options = normalizeOptions(options);
@@ -201,11 +206,17 @@
 
         resultFor(result, rawStage, rawProbabilities, normalizedProbabilities, confidence, fields = {}) {
             const epochIndex = Number(result && result.epochIndex);
+            const candidateStage = fields.candidateStage ?? rawStage;
             return {
                 rawStage,
                 rawProbabilities: rawProbabilities.slice(),
                 normalizedProbabilities: normalizedProbabilities.slice(),
                 stage: fields.stage ?? rawStage,
+                // `stage` is the conservative, scorable output. `candidateStage`
+                // is the model's descriptive candidate and remains visible even
+                // when quality or N3 safety confirmation prevents scoring/control.
+                candidateStage,
+                candidateConfidence: clamp01(fields.candidateConfidence ?? confidenceForStage(candidateStage, normalizedProbabilities)),
                 confidence,
                 rawConfidence: normalizedProbabilities[selectArgmax(normalizedProbabilities)],
                 n3Status: fields.n3Status ?? 'inactive',
@@ -231,6 +242,7 @@
                 return this.resultFor(result, rawStage, rawProbabilities, normalizedProbabilities, 0, {
                     stage: UNKNOWN_STAGE,
                     n3Status: 'suppressed',
+                    candidateStage: rawStage,
                     reason: 'duplicate_or_out_of_order_epoch',
                     controlEligibilityReason: 'duplicate_or_out_of_order_epoch',
                 });
@@ -244,7 +256,11 @@
                 this.n3Active = false;
                 return this.resultFor(result, rawStage, rawProbabilities, normalizedProbabilities, 0, {
                     stage: UNKNOWN_STAGE,
-                    n3Status: 'suppressed',
+                    // A quality rejection is not an N3 rejection. Keep the
+                    // model candidate visible and use a distinct status so the
+                    // UI cannot imply that W/N2/REM was suppressed as N3.
+                    n3Status: 'quality_rejected',
+                    candidateStage: rawStage,
                     reason: quality.reason || 'quality_reject',
                     controlEligibilityReason: 'quality_reject',
                 });

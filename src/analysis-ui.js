@@ -243,6 +243,7 @@
             `<tr><th>${escapeHtml(band.label)}</th><td>${number(band.absolute, 4)} µV²</td><td>${number(band.relativePercent, 2)}%</td></tr>`).join('');
         renderSegments();
         renderPhaseMetrics();
+        renderSleepStructure(summary.onlineSleepMetrics);
         renderOnlineStagingHistory();
         renderYasa();
         const warnings = summary.warnings || [];
@@ -272,11 +273,78 @@
         return String(stage) === 'UNKNOWN' ? '不可评分' : String(stage || '--');
     }
 
+    function stagingCandidateStage(record) {
+        return String(record?.candidateStage || record?.modelStage || record?.rawStage || record?.stage || 'UNKNOWN');
+    }
+
+    function stagingStagePresentation(record) {
+        const scoredStage = String(record?.stage || 'UNKNOWN');
+        const candidateStage = stagingCandidateStage(record);
+        if (scoredStage !== 'UNKNOWN') return stagingStageLabel(scoredStage);
+        if (candidateStage === 'N3') return 'N3 候选';
+        if (candidateStage !== 'UNKNOWN') return stagingStageLabel(candidateStage);
+        return stagingStageLabel(scoredStage);
+    }
+
+    function stagingStagePresentationDetail(record) {
+        const scoredStage = String(record?.stage || 'UNKNOWN');
+        const candidateStage = stagingCandidateStage(record);
+        const status = record?.quality?.ok === false
+            ? '质量警告（未计入）' : stagingN3StatusLabel(record?.n3Status);
+        if (scoredStage === 'UNKNOWN') {
+            const candidate = candidateStage === 'UNKNOWN' ? '' : `模型 ${stagingStageLabel(candidateStage)}`;
+            return [status, candidate, '本 epoch 不计入有效分期'].filter(Boolean).join(' · ');
+        }
+        return status || '已输出';
+    }
+
     function stagingN3StatusLabel(status) {
         return ({
             trusted: 'N3 已确认', pending: 'N3 待连续确认', pending_exit: 'N3 退出待确认',
-            suppressed: 'N3 已抑制', inactive: 'N3 未命中', unavailable: '后处理不可用',
+            suppressed: 'N3 未通过安全确认', quality_rejected: '质量警告（未计入）',
+            inactive: 'N3 未命中', unavailable: '后处理不可用',
         })[String(status || '')] || '';
+    }
+
+    function renderSleepStructure(metrics) {
+        const stateNode = $('analysis-sleep-structure-state');
+        const summaryNode = $('analysis-sleep-structure-summary');
+        const body = $('analysis-sleep-structure-body');
+        if (!stateNode || !summaryNode || !body) return;
+        const stageLabels = { W: 'Wake（W）', N1: 'N1', N2: 'N2', N3: 'N3', REM: 'REM' };
+        const stages = Object.keys(stageLabels);
+        if (!metrics || !Number(metrics.recordCount)) {
+            stateNode.textContent = metrics ? '无在线记录' : '无法读取';
+            summaryNode.textContent = metrics
+                ? '这条记录没有保存在线 EEG 分期事件；可能是旧版本记录或采集时未启用实时分期。'
+                : '当前分析结果未返回在线 EEG 睡眠结构；原始记录未被修改。';
+            body.innerHTML = '<tr><td colspan="5"><div class="empty-state">无可评分在线 EEG 分期</div></td></tr>';
+            return;
+        }
+        const counts = metrics.stageCounts || {};
+        const durations = metrics.stageDurationsSeconds || {};
+        const percentages = metrics.stagePercentages || {};
+        const longest = metrics.longestBouts || metrics.longestBoutSeconds || {};
+        const cards = [
+            ['总睡眠时长', duration(metrics.totalSleepSeconds), 'N1 + N2 + N3 + REM'],
+            ['睡眠效率', Number.isFinite(Number(metrics.sleepEfficiencyPercent)) ? `${number(metrics.sleepEfficiencyPercent, 1)}%` : '--', '可评分 epoch 内'],
+            ['睡眠起点', metrics.sleepOnsetSeconds == null ? '--' : duration(metrics.sleepOnsetSeconds), '相对记录开始'],
+            ['入睡后清醒 WASO', duration(metrics.wasoSeconds), `${Number(metrics.wasoEpochs || 0)} 个 epoch`],
+            ['阶段转换', Number(metrics.transitionCount || 0).toLocaleString(), '仅计连续 epoch'],
+            ['最长 N3', duration(longest.N3), '连续且质量通过'],
+            ['N3 候选 / 确认', `${Number(metrics.n3CandidateEpochs || 0)} / ${Number(metrics.n3ConfirmedEpochs || 0)}`, '候选不等于确认'],
+            ['N3 未通过确认', Number(metrics.n3SuppressedEpochs || 0).toLocaleString(), '质量通过但未确认'],
+            ['质量拒绝 / 未评分', `${Number(metrics.qualityRejectedEpochs || 0)} / ${Number(metrics.unknownEpochs || 0)}`, '未计入结构'],
+        ];
+        stateNode.textContent = `去重 ${Number(metrics.recordCount || 0).toLocaleString()} · 可评分 ${Number(metrics.scoredEpochs || 0).toLocaleString()} epoch`;
+        summaryNode.innerHTML = cards.map(item => `<article class="analysis-yasa-stat"><span>${item[0]}</span><strong>${item[1]}</strong><small>${item[2]}</small></article>`).join('');
+        body.innerHTML = stages.map(stage => `<tr>
+            <th>${stageLabels[stage]}</th>
+            <td>${Number(counts[stage] || 0).toLocaleString()}</td>
+            <td>${duration(Number(durations[stage] || 0))}</td>
+            <td>${number(percentages[stage], 1)}%</td>
+            <td>${duration(Number(longest[stage] || 0))}</td>
+        </tr>`).join('');
     }
 
     function renderOnlineStagingHistory() {
@@ -336,13 +404,12 @@
             const delay = record.modelDelaySeconds > 0 ? `约 ${duration(record.modelDelaySeconds)}` : '0s';
             const stageDetail = [
                 record.inferenceMode === 'causal' ? '当前候选' : record.inferenceMode === 'center' ? '中心验证' : '未知模式',
-                stagingN3StatusLabel(record.n3Status),
-                record.modelStage && record.modelStage !== record.stage ? `模型 ${stagingStageLabel(record.modelStage)}` : '',
+                stagingStagePresentationDetail(record),
             ].filter(Boolean).join(' · ');
             return `<tr>
                 <td>${escapeHtml(formatDate(record.ts))}</td>
                 <td>${record.epochIndex + 1}</td>
-                <td class="stage-cell" title="${escapeHtml(record.n3Reason || '')}"><span class="state-badge ${record.quality?.ok === true && record.stage !== 'UNKNOWN' ? '' : 'off'}">${escapeHtml(stagingStageLabel(record.stage))}</span><small>${escapeHtml(stageDetail)}</small></td>
+                <td class="stage-cell" title="${escapeHtml(record.n3Reason || '')}"><span class="state-badge ${record.quality?.ok === true && record.stage !== 'UNKNOWN' ? '' : 'off'}">${escapeHtml(stagingStagePresentation(record))}</span><small>${escapeHtml(stageDetail)}</small></td>
                 <td>${percentage(record.confidence)}</td>
                 <td class="${record.quality?.ok === true ? '' : 'quality-warning'}">${quality}</td>
                 <td class="${modeClass}">${onlineStagingModeLabel(record.inferenceMode)}</td>

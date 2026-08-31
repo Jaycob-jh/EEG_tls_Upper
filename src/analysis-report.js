@@ -10,6 +10,14 @@ function number(value, digits = 2) {
     return Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : '--';
 }
 
+function duration(seconds) {
+    const value = Math.max(0, Number(seconds) || 0);
+    const hours = Math.floor(value / 3600);
+    const minutes = Math.floor(value % 3600 / 60);
+    const rest = Math.floor(value % 60);
+    return hours ? `${hours}h ${minutes}m ${rest}s` : `${minutes}m ${rest}s`;
+}
+
 function svgEnvelope(chart, options = {}) {
     const width = 1040;
     const height = options.height || 250;
@@ -89,6 +97,11 @@ function buildReportHtml(data) {
     const firstPhases = data.phaseMetrics?.[0]?.phases || {};
     const rejectedPercent = integrity.epochs ? integrity.rejectedEpochs / integrity.epochs * 100 : 0;
     const phaseRows = (data.phaseMetrics || []).map((segment, index) => `<tr><td>${index+1}</td><td>CH${segment.channel}</td><td>${number(segment.startSec,1)}-${number(segment.endSec,1)}s</td><td>${number(segment.phases.before.rmsUv)} / ${number(segment.phases.during.rmsUv)} / ${number(segment.phases.after.rmsUv)}</td><td>${number(segment.phases.during.changeFromBeforePercent.stimulus40,1)}%</td></tr>`).join('');
+    const sleep = data.onlineSleepMetrics || {};
+    const sleepLabels = { W: 'Wake（W）', N1: 'N1', N2: 'N2', N3: 'N3', REM: 'REM' };
+    const sleepBouts = sleep.longestBouts || sleep.longestBoutSeconds || {};
+    const sleepRows = Object.entries(sleepLabels).map(([stage, label]) => `<tr><th>${label}</th><td>${Number(sleep.stageCounts?.[stage] || 0)}</td><td>${duration(sleep.stageDurationsSeconds?.[stage])}</td><td>${number(sleep.stagePercentages?.[stage], 1)}%</td><td>${duration(sleepBouts[stage])}</td></tr>`).join('');
+    const sleepSection = Number(sleep.recordCount) ? `<h2>3. 在线 EEG 睡眠结构</h2><table><thead><tr><th>分期</th><th>可评分 epoch</th><th>时长</th><th>占可评分比例</th><th>最长连续段</th></tr></thead><tbody>${sleepRows}</tbody></table><table>${metricRow('总睡眠时长', duration(sleep.totalSleepSeconds))}${metricRow('睡眠效率', `${number(sleep.sleepEfficiencyPercent, 1)}%`, '仅在可评分 epoch 内计算')}${metricRow('睡眠起点', sleep.sleepOnsetSeconds == null ? '--' : `${number(sleep.sleepOnsetSeconds, 1)} s`, '相对记录开始，不等于熄灯时间')}${metricRow('入睡后清醒 WASO', duration(sleep.wasoSeconds))}${metricRow('阶段转换', Number(sleep.transitionCount || 0))}${metricRow('最长 N3', duration(sleepBouts.N3))}${metricRow('N3 候选 / 确认 / 未通过', `${Number(sleep.n3CandidateEpochs || 0)} / ${Number(sleep.n3ConfirmedEpochs || 0)} / ${Number(sleep.n3SuppressedEpochs || 0)}`)}${metricRow('质量拒绝 / 未评分', `${Number(sleep.qualityRejectedEpochs || 0)} / ${Number(sleep.unknownEpochs || 0)}`)}</table><div class="notice">仅基于去重后的在线 EEG 模型输出；不是 PSG 或 YASA 金标准，质量拒绝与 UNKNOWN 不计入结构统计。</div>` : '<h2>3. 在线 EEG 睡眠结构</h2><div class="notice">该会话没有可评分的在线 EEG 分期结果。</div>';
     return `<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><style>
         @page{size:A4;margin:14mm}*{box-sizing:border-box}body{font-family:"Microsoft YaHei","Segoe UI",sans-serif;color:#1c303a;font-size:11px;margin:0}h1{font-size:24px;margin:0 0 4px}h2{font-size:16px;border-bottom:2px solid #1769e0;padding-bottom:5px;margin:22px 0 10px}h3{font-size:13px;margin:14px 0 6px}.muted{color:#657680}.notice{padding:9px 12px;background:#fff6df;border-left:3px solid #e5a800;margin:10px 0}.chart{border:1px solid #dbe4e9;margin:8px 0 12px;break-inside:avoid}.chart svg{display:block;width:100%}table{border-collapse:collapse;width:100%;margin:7px 0 12px;break-inside:avoid}th,td{border:1px solid #dbe4e9;padding:6px;text-align:left}th{background:#f2f6f8}.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin:10px 0}.kpi{border:1px solid #dbe4e9;padding:9px}.kpi strong{display:block;font-size:16px;color:#1769e0}.page-break{break-before:page}.footer{margin-top:24px;color:#657680;border-top:1px solid #dbe4e9;padding-top:8px}</style></head><body>
         <h1>BrainLume EEG 数据分析报告</h1><div class="muted">生成时间：${escapeHtml(data.generatedAt)} · 会话：${escapeHtml(metadata.planName || '手动采集')} · CH${escapeHtml(metadata.selectedChannel || 2)}</div>
@@ -97,9 +110,10 @@ function buildReportHtml(data) {
         <h2>1. 全记录波形</h2><div class="chart" data-chart="overview">${svgEnvelope(data.charts.overview,{endLabel:`${number(data.durationSeconds/60,1)} min`})}</div>
         <h2>2. 数据质量</h2><table>${metricRow('实际采样率',`${number(integrity.effectiveSampleRateHz,2)} Hz`)}${metricRow('滤波 RMS',`${number(metrics.filteredRmsUv)} µV`)}${metricRow('稳健幅度范围',`${number(metrics.robustRangeUv)} µV`)}${metricRow('峰峰值',`${number(metrics.filteredPeakToPeakUv)} µV`)}${metricRow('原始绝对中位偏置',`${number(metrics.rawAbsoluteMedianUv)} µV`)}${metricRow('分钟基线变化范围',`${number(metrics.baselineRangeUv)} µV`)}${metricRow('50Hz 干扰',`${number(metrics.interference50HzRmsUv)} µV RMS`)}${metricRow('严重伪迹 epoch',`${integrity.rejectedEpochs||0}/${integrity.epochs||0}`,`${number(rejectedPercent,1)}%`)}</table>
         <div class="chart" data-chart="epochs">${svgEpochs(data.epochs||[])}</div>
-        <h2 class="page-break">3. 原始与滤波波形</h2><h3>原始波形</h3><div class="chart" data-chart="raw">${svgEnvelope(data.charts.comparison.raw,{startLabel:`${number(data.charts.comparison.startSec,1)} s`,endLabel:`${number(data.charts.comparison.startSec+10,1)} s`})}</div><h3>零相位 0.5–45Hz + 50Hz 陷波</h3><div class="chart" data-chart="filtered">${svgEnvelope(data.charts.comparison.filtered,{startLabel:`${number(data.charts.comparison.startSec,1)} s`,endLabel:`${number(data.charts.comparison.startSec+10,1)} s`})}</div>
-        <h2>4. 光刺激前、中、后对比</h2>${data.phaseMetrics?.length?`<div class="chart" data-chart="spectrum">${svgSpectrum(firstPhases)}</div><div class="chart" data-chart="bands">${svgBands(firstPhases)}</div><table><thead><tr><th>序号</th><th>通道</th><th>刺激区间</th><th>前/中/后 RMS (µV)</th><th>39–41Hz 中期变化</th></tr></thead><tbody>${phaseRows}</tbody></table>`:'<div class="notice">该会话没有完整的光刺激开始/停止事件，未生成阶段对比。</div>'}
-        <h2>5. 结论边界</h2><p>分析使用一条双极 EEG 导联（两枚互为参考电极）。频带变化可能同时受到生理响应、刺激电路耦合、运动伪迹和时间进程影响，不能单独解释为临床疗效或自然睡眠阶段变化。</p>
+        ${sleepSection}
+        <h2 class="page-break">4. 原始与滤波波形</h2><h3>原始波形</h3><div class="chart" data-chart="raw">${svgEnvelope(data.charts.comparison.raw,{startLabel:`${number(data.charts.comparison.startSec,1)} s`,endLabel:`${number(data.charts.comparison.startSec+10,1)} s`})}</div><h3>零相位 0.5–45Hz + 50Hz 陷波</h3><div class="chart" data-chart="filtered">${svgEnvelope(data.charts.comparison.filtered,{startLabel:`${number(data.charts.comparison.startSec,1)} s`,endLabel:`${number(data.charts.comparison.startSec+10,1)} s`})}</div>
+        <h2>5. 光刺激前、中、后对比</h2>${data.phaseMetrics?.length?`<div class="chart" data-chart="spectrum">${svgSpectrum(firstPhases)}</div><div class="chart" data-chart="bands">${svgBands(firstPhases)}</div><table><thead><tr><th>序号</th><th>通道</th><th>刺激区间</th><th>前/中/后 RMS (µV)</th><th>39–41Hz 中期变化</th></tr></thead><tbody>${phaseRows}</tbody></table>`:'<div class="notice">该会话没有完整的光刺激开始/停止事件，未生成阶段对比。</div>'}
+        <h2>6. 结论边界</h2><p>分析使用一条双极 EEG 导联（两枚互为参考电极）。频带变化可能同时受到生理响应、刺激电路耦合、运动伪迹和时间进程影响，不能单独解释为临床疗效或自然睡眠阶段变化。</p>
         <div class="footer">曹操 v0.3.1 · 原始数据文件：${escapeHtml(data.metadata?.directory||'会话目录')}</div>
     </body></html>`;
 }

@@ -32,6 +32,35 @@ test('quality metrics detect flatline and excessive amplitude', () => {
     assert.equal(Sleep.qualityMetrics([0, 1, -1, 1]).ok, true);
 });
 
+test('quality metrics can ignore only the filter warm-up prefix', () => {
+    const samples = [1000, -1000, 20, -20, 15, -15, 10, -10];
+    assert.equal(Sleep.qualityMetrics(samples, { maxAbsUv: 500, sampleRateHz: 2 }).reason, 'amplitude');
+    const warmed = Sleep.qualityMetrics(samples, {
+        maxAbsUv: 500, sampleRateHz: 2, ignoreLeadingSeconds: 1,
+    });
+    assert.equal(warmed.ok, true);
+    assert.equal(warmed.ignoredLeadingSamples, 2);
+    assert.equal(warmed.validSamples, 6);
+
+    const sustained = Sleep.qualityMetrics([1000, -1000, 900, -900, 800, -800], {
+        maxAbsUv: 500, sampleRateHz: 2, ignoreLeadingSeconds: 1,
+    });
+    assert.equal(sustained.reason, 'amplitude');
+});
+
+test('realtime pipeline consumes filter warm-up allowance only once', () => {
+    const pipeline = new Sleep.RealtimeSleepPipeline({
+        inputRateHz: 2, modelRateHz: 1, epochSeconds: 2, temporalContext: 1,
+        qualityWarmupSeconds: 1, maxAbsUv: 500,
+    });
+    [1000, -1000, 20, -20].forEach(value => pipeline.push(value));
+    assert.equal(pipeline.qualities[0].ok, true);
+    assert.equal(pipeline.qualities[0].ignoredLeadingSamples, 2);
+    [1000, -1000, 20, -20].forEach(value => pipeline.push(value));
+    assert.equal(pipeline.qualities[0].ok, false);
+    assert.equal(pipeline.qualities[0].ignoredLeadingSamples, 0);
+});
+
 test('sleep-stage smoother normalizes probabilities and reduces one-epoch label flips', () => {
     const smoother = new Sleep.SleepStageSmoother({ alpha: 0.5 });
     const first = smoother.update([1, 0, 0, 0, 0]);
@@ -128,6 +157,7 @@ test('sleep-stage stimulus protocol validates safety limits', () => {
     assert.deepEqual(Sleep.validateStimulusProtocol({
         enabled: true,
         targetStages: [],
+        minN3Probability: 1.1,
         minConfidence: 1.1,
         consecutiveEpochs: 0,
         lightChannel: 3,
@@ -137,6 +167,7 @@ test('sleep-stage stimulus protocol validates safety limits', () => {
         cooldownMinutes: 0,
     }), [
         '至少选择一个目标睡眠分期',
+        'N3 概率阈值必须为 50%~100%',
         '置信度阈值必须为 50%~100%',
         '连续命中次数必须为 1~10',
         '光刺激通道必须为 1 或 2',
@@ -178,8 +209,8 @@ test('sleep-stage stimulus gate triggers only after consecutive valid target epo
 
 test('sleep-stage stimulus gate trusts an explicit conservative N3 postprocess result', () => {
     const gate = new Sleep.SleepStageStimulusGate({
-        enabled: true, targetStages: ['N3'], minConfidence: 0.9,
-        consecutiveEpochs: 1, minN3DeltaRatio: 0.9,
+        enabled: true, targetStages: ['N3'], n3TriggerMode: 'confirmed', minConfidence: 0.9,
+        consecutiveEpochs: 1,
     });
     const decision = gate.evaluate({
         epochIndex: 1, stage: 'N3', confidence: 0.96,
@@ -214,8 +245,9 @@ test('sleep-stage stimulus protocol normalizes defaults and rejects invalid upda
         enabled: false,
         shadowMode: true,
         targetStages: ['N3'],
+        n3TriggerMode: 'probability',
+        minN3Probability: 0.85,
         minConfidence: 0.8,
-        minN3DeltaRatio: 0.2,
         consecutiveEpochs: 2,
         lightChannel: 1,
         frequencyHz: 10,
@@ -228,6 +260,42 @@ test('sleep-stage stimulus protocol normalizes defaults and rejects invalid upda
     assert.equal(gate.evaluate({ epochIndex: 1 }).reason, 'disabled');
     assert.throws(() => gate.updateProtocol({ targetStages: [] }), /至少选择一个目标睡眠分期/);
     assert.equal(Sleep.normalizeStimulusProtocol({ shadowMode: false }).shadowMode, false);
+});
+
+test('sleep-stage stimulus gate can trigger from an N3 candidate probability', () => {
+    const gate = new Sleep.SleepStageStimulusGate({
+        enabled: true,
+        targetStages: ['N3'],
+        n3TriggerMode: 'probability',
+        minN3Probability: 0.85,
+        consecutiveEpochs: 2,
+    });
+    const quality = { ok: true };
+    const first = gate.evaluate({
+        epochIndex: 30, stage: 'UNKNOWN', candidateStage: 'N3', candidateConfidence: 0.86, confidence: 0,
+        quality,
+    }, 1_000);
+    assert.deepEqual(first, {
+        triggered: false, reason: 'awaiting_consecutive', stage: 'N3', matchedCount: 1, requiredCount: 2,
+    });
+    const second = gate.evaluate({
+        epochIndex: 31, stage: 'UNKNOWN', candidateStage: 'N3', candidateConfidence: 0.88, confidence: 0,
+        quality,
+    }, 2_000);
+    assert.equal(second.triggered, true);
+    assert.equal(second.triggerBasis, 'n3_probability');
+    assert.equal(second.n3Probability, 0.88);
+    assert.equal(second.confidence, 0.88);
+});
+
+test('probability trigger rejects a candidate below the configured N3 threshold', () => {
+    const gate = new Sleep.SleepStageStimulusGate({
+        enabled: true, targetStages: ['N3'], n3TriggerMode: 'probability', minN3Probability: 0.85,
+    });
+    assert.equal(gate.evaluate({
+        epochIndex: 40, stage: 'UNKNOWN', candidateStage: 'N3', candidateConfidence: 0.84,
+        quality: { ok: true },
+    }).reason, 'low_confidence');
 });
 
 test('sleep-stage stimulus gate resets changed-stage runs and can cancel a failed trigger', () => {

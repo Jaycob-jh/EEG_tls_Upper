@@ -14,10 +14,12 @@
         // requires the user to explicitly leave shadow mode.
         shadowMode: true,
         targetStages: Object.freeze(['N3']),
+        // Closed-loop N3 triggering intentionally uses the visible model
+        // candidate probability by default. This is separate from the more
+        // conservative N3 postprocessor used for scoring/reporting.
+        n3TriggerMode: 'probability',
+        minN3Probability: 0.85,
         minConfidence: 0.8,
-        // A conservative physiology check for a one-channel bipolar lead.
-        // It is a trigger gate, not a replacement for a validated scorer.
-        minN3DeltaRatio: 0.2,
         consecutiveEpochs: 2,
         lightChannel: 1,
         frequencyHz: 10,
@@ -35,8 +37,9 @@
             enabled: source.enabled === true,
             shadowMode: source.shadowMode !== false,
             targetStages,
+            n3TriggerMode: source.n3TriggerMode === 'confirmed' ? 'confirmed' : 'probability',
+            minN3Probability: Number(source.minN3Probability ?? DEFAULT_STIMULUS_PROTOCOL.minN3Probability),
             minConfidence: Number(source.minConfidence ?? DEFAULT_STIMULUS_PROTOCOL.minConfidence),
-            minN3DeltaRatio: Number(source.minN3DeltaRatio ?? DEFAULT_STIMULUS_PROTOCOL.minN3DeltaRatio),
             consecutiveEpochs: Number(source.consecutiveEpochs ?? DEFAULT_STIMULUS_PROTOCOL.consecutiveEpochs),
             lightChannel: Number(source.lightChannel ?? DEFAULT_STIMULUS_PROTOCOL.lightChannel),
             frequencyHz: Number(source.frequencyHz ?? DEFAULT_STIMULUS_PROTOCOL.frequencyHz),
@@ -54,8 +57,8 @@
         const protocol = normalizeStimulusProtocol(value);
         const errors = [];
         if (!protocol.targetStages.length) errors.push('至少选择一个目标睡眠分期');
+        if (!(protocol.minN3Probability >= 0.5 && protocol.minN3Probability <= 1)) errors.push('N3 概率阈值必须为 50%~100%');
         if (!(protocol.minConfidence >= 0.5 && protocol.minConfidence <= 1)) errors.push('置信度阈值必须为 50%~100%');
-        if (!(protocol.minN3DeltaRatio >= 0 && protocol.minN3DeltaRatio <= 1)) errors.push('N3 慢波证据阈值必须为 0%~100%');
         if (!integerInRange(protocol.consecutiveEpochs, 1, 10)) errors.push('连续命中次数必须为 1~10');
         if (![1, 2].includes(protocol.lightChannel)) errors.push('光刺激通道必须为 1 或 2');
         if (!integerInRange(protocol.frequencyHz, 1, 100)) errors.push('光刺激频率必须为 1~100Hz');
@@ -179,18 +182,23 @@
                 return this.reject('cooldown', false);
             }
             if (!result.quality?.ok) return this.reject('poor_quality');
-            const stage = String(result.stage || '');
+            const candidateStage = String(result.candidateStage || '');
+            const useN3Probability = this.protocol.n3TriggerMode === 'probability'
+                && this.protocol.targetStages.includes('N3')
+                && (candidateStage === 'N3' || String(result.stage || '') === 'N3');
+            const stage = useN3Probability ? 'N3' : String(result.stage || '');
             if (!this.protocol.targetStages.includes(stage)) return this.reject('stage_not_selected');
-            const confidence = Number(result.confidence);
-            if (!Number.isFinite(confidence) || confidence < this.protocol.minConfidence) return this.reject('low_confidence');
-            // The N3 postprocessor is the primary conservative evidence gate.
-            // Keep the legacy delta-ratio check for callers that do not provide
-            // an explicit postprocessed N3 result, so older integrations remain
-            // safe and backwards compatible.
-            if (stage === 'N3' && result.n3Postprocessed !== true) {
-                const deltaRatio = Number(result.quality?.deltaRatio);
-                if (!Number.isFinite(deltaRatio)) return this.reject('n3_delta_missing');
-                if (deltaRatio < this.protocol.minN3DeltaRatio) return this.reject('n3_delta_weak');
+            const confidence = useN3Probability
+                ? Number(result.candidateConfidence ?? result.confidence)
+                : Number(result.confidence);
+            const threshold = useN3Probability ? this.protocol.minN3Probability : this.protocol.minConfidence;
+            if (!Number.isFinite(confidence) || confidence < threshold) return this.reject('low_confidence');
+            // Scoring/reporting keeps the conservative N3 postprocessor. The
+            // probability trigger intentionally does not wait for that separate
+            // scorer to become `trusted`; it still requires quality, causal
+            // context (enforced by the caller), consecutive epochs and cooldown.
+            if (stage === 'N3' && this.protocol.n3TriggerMode === 'confirmed' && result.n3Postprocessed !== true) {
+                return this.reject('n3_not_trusted');
             }
 
             if (this.matchedStage === stage) this.matchedCount += 1;
@@ -216,6 +224,8 @@
                 triggered: true,
                 stage,
                 confidence,
+                triggerBasis: useN3Probability ? 'n3_probability' : 'stage_confidence',
+                n3Probability: useN3Probability ? confidence : null,
                 epochIndex,
                 lightChannel: this.protocol.lightChannel,
                 frequencyHz: this.protocol.frequencyHz,
@@ -338,35 +348,50 @@
     function qualityMetrics(samples, options = {}) {
         const values = Array.from(samples || [], Number).filter(Number.isFinite);
         if (!values.length) return { ok: false, reason: 'empty', validSamples: 0 };
+        const sampleRateHz = Number(options.sampleRateHz);
+        const explicitWarmupSamples = Number(options.ignoreLeadingSamples);
+        const requestedWarmupSamples = Number.isFinite(explicitWarmupSamples)
+            ? Math.floor(Math.max(0, explicitWarmupSamples))
+            : Number.isFinite(sampleRateHz) && sampleRateHz > 0
+                ? Math.floor(Math.max(0, Number(options.ignoreLeadingSeconds) || 0) * sampleRateHz)
+                : 0;
+        // The model filter starts from zero state. Ignore only the explicitly
+        // configured leading warm-up segment for the quality decision; keep at
+        // least one sample so a short test window cannot become empty. The
+        // realtime pipeline consumes this allowance once, on its first epoch,
+        // so artifacts at later epoch boundaries remain visible.
+        const ignoredLeadingSamples = Math.min(Math.max(0, values.length - 1), requestedWarmupSamples);
+        const observed = ignoredLeadingSamples ? values.slice(ignoredLeadingSamples) : values;
         let sum = 0;
         let min = Infinity;
         let max = -Infinity;
         let maxAbs = 0;
-        for (const value of values) {
+        for (const value of observed) {
             sum += value;
             min = Math.min(min, value);
             max = Math.max(max, value);
             maxAbs = Math.max(maxAbs, Math.abs(value));
         }
-        const mean = sum / values.length;
+        const mean = sum / observed.length;
         let squareSum = 0;
-        for (const value of values) squareSum += (value - mean) ** 2;
-        const stdUv = Math.sqrt(squareSum / Math.max(1, values.length - 1));
-        const rmsUv = Math.sqrt(values.reduce((total, value) => total + value ** 2, 0) / values.length);
+        for (const value of observed) squareSum += (value - mean) ** 2;
+        const stdUv = Math.sqrt(squareSum / Math.max(1, observed.length - 1));
+        const rmsUv = Math.sqrt(observed.reduce((total, value) => total + value ** 2, 0) / observed.length);
         const maxAbsUv = Number(options.maxAbsUv || 500);
         const minStdUv = Number(options.minStdUv || 0.01);
         const ok = maxAbs <= maxAbsUv && stdUv >= minStdUv;
         return {
             ok,
             reason: ok ? 'ok' : (maxAbs > maxAbsUv ? 'amplitude' : 'flatline'),
-            validSamples: values.length,
+            validSamples: observed.length,
+            ignoredLeadingSamples,
             meanUv: mean,
             stdUv,
             rmsUv,
             crestFactor: rmsUv > 0 ? maxAbs / rmsUv : null,
             peakToPeakUv: max - min,
             maxAbsUv: maxAbs,
-            ...spectralFeatures(values, options.sampleRateHz, options),
+            ...spectralFeatures(observed, options.sampleRateHz, options),
         };
     }
 
@@ -409,6 +434,10 @@
             this.inputEpochLength = Math.round(this.inputRateHz * this.epochSeconds);
             this.modelEpochLength = Math.round(this.modelRateHz * this.epochSeconds);
             this.maxAbsUv = Number(options.maxAbsUv || 500);
+            // Keep the reusable pipeline strict by default. The desktop live
+            // path opts into the device/filter warm-up explicitly.
+            this.qualityWarmupSeconds = Math.max(0, Number(options.qualityWarmupSeconds) || 0);
+            this.qualityWarmupSamples = Math.floor(this.qualityWarmupSeconds * this.inputRateHz);
             this.qualityMaxSamples = Math.max(256, Math.floor(Number(options.qualityMaxSamples) || 4096));
             this.reset();
         }
@@ -419,6 +448,7 @@
             this.epochs = [];
             this.qualities = [];
             this.totalEpochs = 0;
+            this.qualityWarmupRemainingSamples = this.qualityWarmupSamples;
         }
 
         get progress() { return this.current.length / this.inputEpochLength; }
@@ -436,9 +466,12 @@
             const rawEpoch = this.current.splice(0, this.inputEpochLength);
             const epochGapSamples = this.currentGapSamples;
             this.currentGapSamples = 0;
+            const warmupSamples = this.qualityWarmupRemainingSamples;
+            this.qualityWarmupRemainingSamples = 0;
             const quality = qualityMetrics(rawEpoch, {
                 maxAbsUv: this.maxAbsUv,
                 sampleRateHz: this.inputRateHz,
+                ignoreLeadingSamples: warmupSamples,
                 maxSamples: this.qualityMaxSamples,
             });
             if (epochGapSamples) {

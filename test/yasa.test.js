@@ -36,6 +36,19 @@ test('analysis page exposes persisted online staging history for each selected s
     assert.match(analysisPreload, /loadSessionStagingHistory/);
 });
 
+test('analysis page exposes the deduplicated online EEG sleep-structure summary', () => {
+    const html = read('src/analysis.html');
+    const ui = read('src/analysis-ui.js');
+    const worker = read('analysis-worker.js');
+    assert.match(html, /ONLINE EEG SLEEP STRUCTURE/);
+    assert.match(html, /id="analysis-sleep-structure-body"/);
+    assert.match(ui, /function renderSleepStructure/);
+    assert.match(ui, /n3CandidateEpochs/);
+    assert.match(ui, /n3SuppressedEpochs/);
+    assert.match(html, /不是 PSG 或 YASA 金标准/);
+    assert.match(worker, /computeOnlineSleepMetrics\(recording\.events\)/);
+});
+
 test('YASA integration preserves the raw-data boundary and removes the redundant channel button', () => {
     const html = read('src/index.html');
     const app = read('src/app.js');

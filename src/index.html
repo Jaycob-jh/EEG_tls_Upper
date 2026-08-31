@@ -113,7 +113,7 @@
                     <article class="analysis-metric"><span>模型</span><strong id="realtime-model">加载中</strong><small id="realtime-model-detail">Stage-1 ONNX</small></article>
                     <article class="analysis-metric"><span>模型输入</span><strong>250→100 Hz</strong><small>0.4–18 Hz + 陷波 · 21×30 秒</small></article>
                     <article class="analysis-metric"><span>Epoch</span><strong id="realtime-epoch">0 epoch</strong><small id="realtime-progress">当前窗口 0%</small></article>
-                    <article class="analysis-metric"><span>当前分期</span><strong id="realtime-stage">等待数据</strong><small id="realtime-stage-time">尚无结果</small></article>
+                    <article class="analysis-metric"><span>当前模型候选</span><strong id="realtime-stage">等待数据</strong><small id="realtime-stage-time">尚无结果</small></article>
                     <article class="analysis-metric"><span>信号质量</span><strong id="realtime-quality">--</strong><small id="realtime-quality-detail">等待 30 秒 epoch</small></article>
                     <article class="analysis-metric light-state-card" data-light-state="unknown"><span>设备光刺激</span><strong id="realtime-light-state">未连接</strong><small id="realtime-light-detail">无法确认设备光刺激状态</small></article>
                 </div>
@@ -137,7 +137,7 @@
                         <div><p class="eyebrow">STAGE-TRIGGERED STIMULATION</p><h3>分期触发刺激协议</h3></div>
                         <label class="realtime-enable"><input type="checkbox" id="sleep-stimulus-enabled"> 启用协议</label>
                     </div>
-                    <div class="sleep-stimulus-warning">连续命中可自行设置：1 个 epoch 约 30 秒，2 个约 60 秒，依此类推。分期改变、上下文质量不通过、信号质量不通过或置信度不足会清零计数。闭环只接受当前因果候选，不使用约 5 分钟延迟的中心回顾输出；默认启用“验证模式”，只记录目标分期命中，不向设备发光。N3 先经过保守后处理：因果输出默认要求高概率且连续 3 个 epoch，质量不合格或孤立 N3 会标为不可评分；下方 δ 项仅作为旧记录/未接入后处理时的兼容安全门。点击“全部停止”、停止 EEG、关闭实时分析或 BLE 断开都会解除协议；每次启动软件也需要重新启用。</div>
+                    <div class="sleep-stimulus-warning">本协议的推荐用途是“只勾选 N3，按 N3 候选概率自动触发”。分期显示仍经过保守后处理；选择“概率达到阈值”后，不必等待保守分期显示为“N3 已确认”，但仍必须满足当前因果输出、收满 21 个 epoch、上下文和信号质量通过、连续命中及设备状态回读；中心回顾输出永远不会触发。1 个 epoch 约 30 秒，推荐连续 2 个约 60 秒，避免单个误判立即发光。默认是“验证模式”，只记录命中、不向设备发光；确认记录稳定后，再手动关闭验证模式并启用协议。点击“全部停止”、停止 EEG、关闭实时分析或 BLE 断开都会解除协议；每次启动软件也需要重新启用。</div>
                     <div class="sleep-stimulus-form">
                         <fieldset class="sleep-stage-selector">
                             <legend>目标分期（可多选）</legend>
@@ -147,8 +147,9 @@
                             <label><input type="checkbox" name="sleep-stimulus-stage" value="N3"> N3</label>
                             <label><input type="checkbox" name="sleep-stimulus-stage" value="REM"> REM</label>
                         </fieldset>
-                        <label>置信度阈值 (%)<input id="sleep-stimulus-confidence" type="number" min="50" max="100" step="1" value="80"></label>
-                        <label>N3 兼容 δ 安全门 (%)<input id="sleep-stimulus-delta" type="number" min="0" max="100" step="1" value="20" title="仅用于未带 N3 后处理标记的旧结果；当前实时结果由保守 N3 后处理负责确认"></label>
+                        <label>N3 触发依据<select id="sleep-stimulus-n3-mode"><option value="probability">候选概率达到阈值（推荐）</option><option value="confirmed">保守确认后触发</option></select></label>
+                        <label>N3 概率阈值 (%)<input id="sleep-stimulus-n3-probability" type="number" min="50" max="100" step="1" value="85"></label>
+                        <label>其他分期置信度 (%)<input id="sleep-stimulus-confidence" type="number" min="50" max="100" step="1" value="80"></label>
                         <label>连续命中 (epoch)<input id="sleep-stimulus-consecutive" type="number" min="1" max="10" step="1" value="2"></label>
                         <label>光刺激通道<select id="sleep-stimulus-channel"><option value="1">通道 1</option><option value="2">通道 2</option></select></label>
                         <label>频率 (Hz)<input id="sleep-stimulus-frequency" type="number" min="1" max="100" step="1" value="10"></label>
@@ -165,7 +166,7 @@
                 </section>
                 <section class="analysis-section realtime-history-section">
                     <div class="section-heading compact"><div><p class="eyebrow">STAGING HISTORY</p><h3>实时分期记录</h3></div></div>
-                    <div class="analysis-table-wrap"><table class="analysis-table"><thead><tr><th>输出时间</th><th>对应 epoch</th><th>分期</th><th>置信度</th><th>质量</th><th>光刺激</th><th>W</th><th>N1</th><th>N2</th><th>N3</th><th>REM</th></tr></thead><tbody id="realtime-history"><tr><td colspan="11">尚无分期结果</td></tr></tbody></table></div>
+                    <div class="analysis-table-wrap"><table class="analysis-table"><thead><tr><th>输出时间</th><th>对应 epoch</th><th>分期</th><th>模型概率</th><th>质量</th><th>光刺激</th><th>W</th><th>N1</th><th>N2</th><th>N3</th><th>REM</th></tr></thead><tbody id="realtime-history"><tr><td colspan="11">尚无分期结果</td></tr></tbody></table></div>
                 </section>
             </section>
 

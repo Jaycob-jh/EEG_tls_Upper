@@ -162,10 +162,38 @@
         return String(stage) === (SleepPostprocess?.UNKNOWN_STAGE || 'UNKNOWN') ? '不可评分' : String(stage || '--');
     }
 
+    function sleepCandidateStage(item) {
+        return String(item?.candidateStage || item?.modelStage || item?.rawStage || item?.stage || 'UNKNOWN');
+    }
+
+    function sleepStagePresentation(item) {
+        const scoredStage = String(item?.stage || 'UNKNOWN');
+        const candidateStage = sleepCandidateStage(item);
+        if (scoredStage !== (SleepPostprocess?.UNKNOWN_STAGE || 'UNKNOWN')) return sleepStageLabel(scoredStage);
+        if (candidateStage === 'N3') return 'N3 候选';
+        if (candidateStage !== (SleepPostprocess?.UNKNOWN_STAGE || 'UNKNOWN')) return sleepStageLabel(candidateStage);
+        return sleepStageLabel(scoredStage);
+    }
+
+    function sleepStagePresentationDetail(item) {
+        const scoredStage = String(item?.stage || 'UNKNOWN');
+        const candidateStage = sleepCandidateStage(item);
+        const status = item?.quality?.ok === false
+            ? '质量警告（未计入）' : n3StatusLabel(item?.n3Status);
+        if (scoredStage === (SleepPostprocess?.UNKNOWN_STAGE || 'UNKNOWN')) {
+            const candidate = candidateStage === (SleepPostprocess?.UNKNOWN_STAGE || 'UNKNOWN')
+                ? '' : `模型 ${sleepStageLabel(candidateStage)}${candidateStage === 'N3' && Number.isFinite(Number(item?.candidateConfidence))
+                    ? ` · 概率 ${(Number(item.candidateConfidence) * 100).toFixed(1)}%` : ''}`;
+            return [status, candidate, '本 epoch 不计入有效分期'].filter(Boolean).join(' · ');
+        }
+        return status || '已输出';
+    }
+
     function n3StatusLabel(status) {
         return ({
             trusted: 'N3 已确认', pending: 'N3 待连续确认', pending_exit: 'N3 退出待确认',
-            suppressed: 'N3 已抑制', inactive: 'N3 未命中', unavailable: '后处理不可用',
+            suppressed: 'N3 未通过安全确认', quality_rejected: '质量警告（未计入）',
+            inactive: 'N3 未命中', unavailable: '后处理不可用',
         })[String(status || '')] || '';
     }
 
@@ -312,11 +340,17 @@
 
     function renderSleepHistory() {
         $('realtime-history').innerHTML = state.sleepHistory.length ? state.sleepHistory.map(item => `<tr>
-            <td>${escapeHtml(item.outputTime)}</td><td>${item.epochIndex + 1}</td><td title="${item.inferenceMode === 'causal' ? '当前因果输出，用于实验性闭环候选' : '训练一致中心输出，用于回顾性验证'}${item.n3Reason ? ` · ${item.n3Reason}` : ''}"><span class="state-badge ${item.quality.ok && item.stage !== (SleepPostprocess?.UNKNOWN_STAGE || 'UNKNOWN') ? '' : 'off'}">${escapeHtml(sleepStageLabel(item.stage))}</span><small class="stage-source">${item.inferenceMode === 'causal' ? '当前候选' : '中心验证'}${n3StatusLabel(item.n3Status) ? ` · ${n3StatusLabel(item.n3Status)}` : ''}${item.modelStage && item.modelStage !== item.stage ? ` · 模型 ${sleepStageLabel(item.modelStage)}` : ''}</small></td>
-            <td>${(item.confidence * 100).toFixed(1)}%</td><td>${item.quality.ok ? '通过' : escapeHtml(item.quality.reason)}</td>
+            <td>${escapeHtml(item.outputTime)}</td><td>${item.epochIndex + 1}</td><td title="${item.inferenceMode === 'causal' ? '当前因果输出，用于实验性闭环候选' : '训练一致中心输出，用于回顾性验证'}${item.n3Reason ? ` · ${item.n3Reason}` : ''}"><span class="state-badge ${item.quality.ok && item.stage !== (SleepPostprocess?.UNKNOWN_STAGE || 'UNKNOWN') ? '' : 'off'}">${escapeHtml(sleepStagePresentation(item))}</span><small class="stage-source">${item.inferenceMode === 'causal' ? '当前候选' : '中心验证'} · ${escapeHtml(sleepStagePresentationDetail(item))}</small></td>
+            <td>${sleepHistoryProbability(item)}</td><td>${item.quality.ok ? '通过' : escapeHtml(item.quality.reason)}</td>
             <td>${item.stimulusShadow ? '验证命中（未发光）' : (item.lightChannels?.length ? `CH${item.lightChannels.join('、CH')} 开启` : '关闭')}</td>
             ${item.probabilities.map(value => `<td>${(value * 100).toFixed(1)}%</td>`).join('')}
         </tr>`).join('') : '<tr><td colspan="11">尚无分期结果</td></tr>';
+    }
+
+    function sleepHistoryProbability(item) {
+        const value = item?.candidateStage === 'N3' && Number.isFinite(Number(item.candidateConfidence))
+            ? Number(item.candidateConfidence) : Number(item?.confidence);
+        return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : '--';
     }
 
     function sleepStimulusProtocolFromForm(enabled = state.sleepStimulusProtocol.enabled) {
@@ -324,8 +358,9 @@
             enabled,
             shadowMode: $('sleep-stimulus-shadow-mode').checked,
             targetStages: [...document.querySelectorAll('input[name="sleep-stimulus-stage"]:checked')].map(input => input.value),
+            n3TriggerMode: $('sleep-stimulus-n3-mode').value,
+            minN3Probability: Number($('sleep-stimulus-n3-probability').value) / 100,
             minConfidence: Number($('sleep-stimulus-confidence').value) / 100,
-            minN3DeltaRatio: Number($('sleep-stimulus-delta').value) / 100,
             consecutiveEpochs: Number($('sleep-stimulus-consecutive').value),
             lightChannel: Number($('sleep-stimulus-channel').value),
             frequencyHz: Number($('sleep-stimulus-frequency').value),
@@ -364,8 +399,9 @@
         for (const input of document.querySelectorAll('input[name="sleep-stimulus-stage"]')) {
             input.checked = protocol.targetStages.includes(input.value);
         }
+        $('sleep-stimulus-n3-mode').value = protocol.n3TriggerMode;
+        $('sleep-stimulus-n3-probability').value = String(Math.round(protocol.minN3Probability * 100));
         $('sleep-stimulus-confidence').value = String(Math.round(protocol.minConfidence * 100));
-        $('sleep-stimulus-delta').value = String(Math.round(protocol.minN3DeltaRatio * 100));
         $('sleep-stimulus-consecutive').value = String(protocol.consecutiveEpochs);
         $('sleep-stimulus-channel').value = String(protocol.lightChannel);
         $('sleep-stimulus-frequency').value = String(protocol.frequencyHz);
@@ -373,7 +409,12 @@
         $('sleep-stimulus-duration').value = String(protocol.durationSeconds);
         $('sleep-stimulus-cooldown').value = String(protocol.cooldownMinutes);
         $('sleep-stimulus-shadow-mode').checked = protocol.shadowMode;
-        $('sleep-stimulus-mode').textContent = protocol.shadowMode ? '默认验证模式：仅记录命中，不发光' : '主动模式：允许向设备发送发光命令';
+        const triggerMode = protocol.n3TriggerMode === 'probability'
+            ? `N3 概率 ≥ ${Math.round(protocol.minN3Probability * 100)}%`
+            : 'N3 保守确认';
+        $('sleep-stimulus-mode').textContent = protocol.shadowMode
+            ? `验证模式：仅记录命中，不发光 · ${triggerMode}`
+            : `主动模式：允许向设备发送发光命令 · ${triggerMode}`;
         if (!protocol.enabled) setSleepStimulusStatus('未启用');
     }
 
@@ -385,7 +426,7 @@
         const errors = Sleep.validateStimulusProtocol(protocol);
         if (errors.length) throw new Error(errors.join('；'));
         state.sleepStimulusProtocol = Sleep.normalizeStimulusProtocol(protocol);
-        state.sleepStimulusGate.updateProtocol(state.sleepStimulusProtocol);
+            state.sleepStimulusGate.updateProtocol(state.sleepStimulusProtocol);
         saveSleepStimulusProtocol(state.sleepStimulusProtocol);
         renderSleepStimulusProtocol();
         return state.sleepStimulusProtocol;
@@ -408,9 +449,12 @@
     }
 
     async function executeSleepStimulus(trigger) {
+        const triggerLabel = trigger.triggerBasis === 'n3_probability'
+            ? `N3 概率 ${(trigger.n3Probability * 100).toFixed(1)}%`
+            : `置信度 ${(trigger.confidence * 100).toFixed(1)}%`;
         if (trigger.shadowMode) {
             await audit('sleep_stimulus_shadow_triggered', { ...trigger, deviceCommandSent: false });
-            setSleepStimulusStatus(`${trigger.stage} 验证命中 · ${(trigger.confidence * 100).toFixed(1)}% · 未发光`);
+            setSleepStimulusStatus(`${trigger.stage} 验证命中 · ${triggerLabel} · 未发光`);
             addActivity(`睡眠分期 ${trigger.stage} 验证命中（shadow mode，未发光）`);
             return;
         }
@@ -431,7 +475,7 @@
         }
 
         state.sleepStimulusActiveChannel = channel;
-        setSleepStimulusStatus(`${trigger.stage} 已触发 CH${channel} · ${(trigger.confidence * 100).toFixed(1)}% · ${trigger.durationMs / 1000} 秒`);
+        setSleepStimulusStatus(`${trigger.stage} 已触发 CH${channel} · ${triggerLabel} · ${trigger.durationMs / 1000} 秒`);
         addActivity(`睡眠分期 ${trigger.stage} 触发光刺激 CH${channel}`);
         await audit('sleep_stimulus_triggered', { ...trigger, modelDelayEpochs: 0, decisionCadenceSeconds: 30 });
         if (state.sleepStimulusStopTimer) clearTimeout(state.sleepStimulusStopTimer);
@@ -458,17 +502,24 @@
             setSleepStimulusStatus('已启用 · 中心输出仅作回顾性验证，等待当前因果候选');
             return;
         }
-        if (item.controlEligible !== true) {
-            const reason = item.controlEligibilityReason === 'insufficient_context'
+        const useN3ProbabilityTrigger = state.sleepStimulusProtocol.n3TriggerMode === 'probability'
+            && state.sleepStimulusProtocol.targetStages.includes('N3')
+            && (item.candidateStage === 'N3' || item.stage === 'N3');
+        const stimulusControlEligible = useN3ProbabilityTrigger
+            ? item.stimulusControlEligible === true : item.controlEligible === true;
+        if (stimulusControlEligible !== true) {
+            const eligibilityReason = useN3ProbabilityTrigger
+                ? item.stimulusControlEligibilityReason : item.controlEligibilityReason;
+            const reason = eligibilityReason === 'insufficient_context'
                 ? '尚未收满 21 个 epoch'
-                : (item.controlEligibilityReason === 'context_quality' ? '21 个 epoch 中存在质量警告' : '当前因果时序未满足');
+                : (eligibilityReason === 'context_quality' ? '21 个 epoch 中存在质量警告' : '当前因果时序未满足');
             setSleepStimulusStatus(`当前因果候选暂不触发 · ${reason}`);
             await audit('sleep_stimulus_control_blocked', {
                 epochIndex: item.epochIndex,
                 stage: item.stage,
                 inferenceMode: item.inferenceMode,
                 modelDelaySeconds: item.modelDelaySeconds,
-                controlEligibilityReason: item.controlEligibilityReason,
+                controlEligibilityReason: eligibilityReason,
                 reason: 'model_output_not_control_eligible',
             });
             return;
@@ -495,29 +546,33 @@
             epochIndex: item.epochIndex,
             stage: item.stage,
             confidence: item.confidence,
+            candidateStage: item.candidateStage,
+            candidateConfidence: item.candidateConfidence,
             quality: item.quality,
             n3Postprocessed: item.n3Postprocessed === true,
         });
         if (decision.triggered) {
             item.stimulusShadow = state.sleepStimulusProtocol.shadowMode;
+            item.stimulusTriggerBasis = decision.triggerBasis;
+            item.stimulusN3Probability = decision.n3Probability;
             renderSleepHistory();
             await executeSleepStimulus(decision);
             return;
         }
         const statusLabels = {
-            n3_delta_missing: 'N3 慢波证据缺失，连续计数已清零',
-            n3_delta_weak: 'N3 慢波证据不足，连续计数已清零',
             poor_quality: '质量未通过，连续计数已清零',
             stage_not_selected: `等待目标分期 · 当前 ${sleepStageLabel(item.stage)}`,
-            low_confidence: `置信度不足 · ${(item.confidence * 100).toFixed(1)}%`,
+            low_confidence: useN3ProbabilityTrigger
+                ? `N3 概率不足 · ${(Number(item.candidateConfidence || 0) * 100).toFixed(1)}%`
+                : `置信度不足 · ${(item.confidence * 100).toFixed(1)}%`,
             stimulus_active: '刺激进行中',
             cooldown: '冷却中',
             duplicate_epoch: '已忽略重复 epoch',
             context_quality: '上下文质量未通过',
-            n3_not_trusted: `N3 尚未确认 · ${n3StatusLabel(item.n3Status) || '等待后处理'}`,
+            n3_not_trusted: `N3 尚未通过保守确认 · ${n3StatusLabel(item.n3Status) || '等待后处理'}`,
         };
         if (decision.reason === 'awaiting_consecutive') {
-            setSleepStimulusStatus(`${decision.stage} 连续命中 ${decision.matchedCount} / ${decision.requiredCount}`);
+            setSleepStimulusStatus(`${decision.stage}${useN3ProbabilityTrigger ? ' 概率候选' : ''}连续命中 ${decision.matchedCount} / ${decision.requiredCount}`);
         } else if (statusLabels[decision.reason]) {
             setSleepStimulusStatus(statusLabels[decision.reason]);
         }
@@ -555,6 +610,8 @@
                 controlEligible: input.controlEligible === true,
             }) : {
                 stage: modelStage,
+                candidateStage: modelStage,
+                candidateConfidence: modelConfidence,
                 confidence: modelConfidence,
                 n3Status: 'unavailable',
                 reason: 'postprocessor_unavailable',
@@ -563,33 +620,49 @@
                 n3Evidence: null,
             };
             const stage = postprocessed.stage || modelStage;
+            const candidateStage = postprocessed.candidateStage || modelStage;
+            const candidateConfidence = Number.isFinite(Number(postprocessed.candidateConfidence))
+                ? Number(postprocessed.candidateConfidence) : modelConfidence;
             const confidence = Number.isFinite(Number(postprocessed.confidence))
                 ? Number(postprocessed.confidence) : modelConfidence;
-            // N3 must pass the dedicated postprocessor before it can enter the
-            // closed-loop gate. Other selected stages keep the existing causal
-            // eligibility semantics; the N3 postprocessor is not a blanket
-            // disable switch for W/N1/N2/REM protocols.
+            // Scoring/control eligibility remains conservative for the displayed
+            // stage. The probability-trigger path below gets its own eligibility
+            // flag so a visible N3 candidate can drive the optional experiment
+            // without rewriting the reported sleep stage.
             const controlEligible = modelStage === 'N3' && n3Postprocessor
                 ? postprocessed.controlEligible === true
                 : input.controlEligible === true && targetQuality.ok === true;
+            const stimulusControlEligible = input.inferenceMode === 'causal'
+                && input.controlEligible === true && targetQuality.ok === true;
+            const stimulusControlEligibilityReason = input.controlEligibilityReason;
             const item = {
                 outputTime: formatTime(), epochIndex: input.classifiedEpochIndex, stage, confidence,
                 probabilities: smoothed.probabilities, rawProbabilities: Array.from(result.probabilities, Number),
                 rawStage: Sleep.STAGES[result.stage] || `Stage ${result.stage}`, modelStage,
+                candidateStage, candidateConfidence,
                 modelConfidence, n3Status: postprocessed.n3Status, n3Reason: postprocessed.reason,
                 n3Evidence: postprocessed.n3Evidence, n3Postprocessed: postprocessed.n3Status === 'trusted',
                 probabilityMargin: smoothed.margin, quality: targetQuality,
                 inferenceMode, modelDelaySeconds: delaySeconds,
                 controlEligible,
                 controlEligibilityReason: postprocessed.controlEligibilityReason || input.controlEligibilityReason,
+                stimulusControlEligible,
+                stimulusControlEligibilityReason,
                 lightChannels: Array.from(input.lightChannels || []),
             };
             state.sleepHistory.unshift(item);
             state.sleepHistory.length = Math.min(state.sleepHistory.length, 120);
-            $('realtime-stage').textContent = targetQuality.ok ? sleepStageLabel(stage) : `${sleepStageLabel(stage)}（质量警告）`;
+            const presentation = sleepStagePresentation(item);
+            $('realtime-stage').textContent = targetQuality.ok ? presentation : `${presentation}（质量警告）`;
+            const presentationHint = stage === (SleepPostprocess?.UNKNOWN_STAGE || 'UNKNOWN')
+                ? (candidateStage === 'N3'
+                    ? (state.sleepStimulusProtocol.n3TriggerMode === 'probability'
+                        ? 'N3 候选，闭环可按概率阈值单独判断' : 'N3 候选，尚未通过保守确认')
+                    : '候选已显示，但本 epoch 不计入有效分期')
+                : '已通过当前分期后处理';
             $('realtime-stage-time').textContent = inferenceMode === 'center'
-                ? `目标 epoch ${input.classifiedEpochIndex + 1} · 中心输出 · 约 ${Math.round(delaySeconds / 60)} 分钟延迟`
-                : `目标 epoch ${input.classifiedEpochIndex + 1} · 当前因果输出 · 每 30 秒更新`;
+                ? `${presentationHint} · 目标 epoch ${input.classifiedEpochIndex + 1} · 中心输出 · 约 ${Math.round(delaySeconds / 60)} 分钟延迟`
+                : `${presentationHint} · 目标 epoch ${input.classifiedEpochIndex + 1} · 当前因果输出 · 每 30 秒更新`;
             $('realtime-inference-state').textContent = inferenceMode === 'center'
                 ? `完成 · 中心输出 ${result.selectedOutputIndex + 1}/${input.temporalContext} · 回顾性验证 · N3 后处理`
                 : `完成 · 当前输出 ${result.selectedOutputIndex + 1}/${input.temporalContext} · 实验性闭环候选 · N3 后处理`;
@@ -599,12 +672,15 @@
                 epochIndex: input.classifiedEpochIndex, stage, confidence,
                 probabilities: smoothed.probabilities, rawProbabilities: item.rawProbabilities,
                 rawStage: item.rawStage, modelStage, modelConfidence,
+                candidateStage: item.candidateStage, candidateConfidence: item.candidateConfidence,
                 n3Status: item.n3Status, n3Reason: item.n3Reason, n3Evidence: item.n3Evidence,
                 n3Postprocessed: item.n3Postprocessed,
                 probabilityMargin: smoothed.margin, quality: targetQuality,
                 outputIndex: result.selectedOutputIndex, historyEpochs: input.historyEpochs,
                 lightChannels: item.lightChannels, inferenceMode,
                 modelDelaySeconds: delaySeconds, controlEligible: item.controlEligible,
+                stimulusControlEligible: item.stimulusControlEligible,
+                stimulusControlEligibilityReason: item.stimulusControlEligibilityReason,
                 controlEligibilityReason: item.controlEligibilityReason,
             });
             await handleSleepStimulusResult(item);
@@ -666,7 +742,10 @@
 
     async function setupRealtimeSleep() {
         if (!Sleep) throw new Error('实时睡眠分析模块加载失败');
-        state.sleepPipeline = new Sleep.RealtimeSleepPipeline({ inputRateHz: 250, modelRateHz: 100, epochSeconds: 30, temporalContext: 21 });
+        state.sleepPipeline = new Sleep.RealtimeSleepPipeline({
+            inputRateHz: 250, modelRateHz: 100, epochSeconds: 30, temporalContext: 21,
+            qualityWarmupSeconds: 5,
+        });
         state.sleepProbabilitySmoothers = {
             center: new Sleep.SleepStageSmoother({ alpha: 0.5 }),
             causal: new Sleep.SleepStageSmoother({ alpha: 0.5 }),
@@ -1526,7 +1605,7 @@
     function renderPlans() {
         const list = $('plan-list');
         if (!state.plans.length) {
-            list.innerHTML = '<div class="empty-state">尚未创建方案。新建一个包含阻抗、EEG 和光刺激动作的时间轴。</div>';
+            list.innerHTML = '<div class="empty-state">尚未创建方案。新建一个默认不发光的纯 EEG 采集时间轴；需要时再手动添加光刺激动作。</div>';
             return;
         }
         list.innerHTML = state.plans.map(plan => {
@@ -1546,8 +1625,6 @@
         if (mode === 'relative') return [
             { id: Core.makeId('action'), offsetSeconds: 0, type: 'impedance_check' },
             { id: Core.makeId('action'), offsetSeconds: 60, type: 'eeg_start' },
-            { id: Core.makeId('action'), offsetSeconds: 120, type: 'light_start', lightChannel: Core.FIXED_PLAN_LIGHT_CHANNEL, light: { frequencyHz: 10, durationMs: 0, powerPercent: 5 } },
-            { id: Core.makeId('action'), offsetSeconds: 180, type: 'light_stop', lightChannel: Core.FIXED_PLAN_LIGHT_CHANNEL },
             { id: Core.makeId('action'), offsetSeconds: 240, type: 'eeg_stop' },
         ];
         const base = new Date(Date.now() + 5 * 60 * 1000);
@@ -1558,8 +1635,6 @@
         return [
             { id: Core.makeId('action'), time: at(0), type: 'impedance_check' },
             { id: Core.makeId('action'), time: at(1), type: 'eeg_start' },
-            { id: Core.makeId('action'), time: at(2), type: 'light_start', lightChannel: Core.FIXED_PLAN_LIGHT_CHANNEL, light: { frequencyHz: 10, durationMs: 0, powerPercent: 5 } },
-            { id: Core.makeId('action'), time: at(3), type: 'light_stop', lightChannel: Core.FIXED_PLAN_LIGHT_CHANNEL },
             { id: Core.makeId('action'), time: at(4), type: 'eeg_stop' },
         ];
     }

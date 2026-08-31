@@ -91,6 +91,7 @@ test('analysis worker reads a session and computes phase metrics', async () => {
         { ts: '2026-08-07T10:00:00+08:00', action: 'session_started' },
         { ts: '2026-08-07T10:00:10+08:00', action: 'light_started', channel: 2 },
         { ts: '2026-08-07T10:00:20+08:00', action: 'light_stopped', channel: 2 },
+        { ts: '2026-08-07T10:00:30+08:00', action: 'sleep_stage_inferred', epochIndex: 0, stage: 'W', modelStage: 'W', candidateStage: 'W', inferenceMode: 'causal', quality: { ok: true } },
     ].map(JSON.stringify).join('\n'));
     const header = 'session_id,plan_id,device_id,selected_channel,sample_index,received_at_iso,elapsed_us,seq,status_hex,raw_code,voltage_uv,payload_hex,seq_gap\n';
     const rows = Array.from(values, (value, index) => `session-test,,,2,${index},2026-08-07T10:00:00+08:00,${index * 4000},${index % 65536},C00000,${Math.round(value)},${value},00,0`).join('\n');
@@ -102,6 +103,8 @@ test('analysis worker reads a session and computes phase metrics', async () => {
         assert.equal(summary.segments.length, 1);
         assert.equal(summary.phaseMetrics.length, 1);
         assert.equal(summary.epochs.length, 1);
+        assert.equal(summary.onlineSleepMetrics.recordCount, 1);
+        assert.equal(summary.onlineSleepMetrics.stageCounts.W, 1);
         const compact = await workerRequest(worker, 'open', {
             directory, sessionId: metadata.id, includeEpochs: false, includeSpectra: false,
         });
@@ -156,6 +159,7 @@ test('report output contains charts, disclaimer and reproducible CSV attachments
         charts: { overview: { samples: [0,1] }, comparison: { startSec: 0, raw: { samples: [0,1] }, filtered: { samples: [0,1] } } } };
     const html = Report.buildReportHtml(data);
     assert.match(html, /不构成医疗诊断/);
+    assert.match(html, /在线 EEG 睡眠结构/);
     assert.match(html, /data-chart="overview"/);
     assert.match(Report.epochsCsv(data.epochs), /robust_range_uv/);
     assert.match(Report.phaseMetricsCsv(data.phaseMetrics), /stimulus40_pct/);

@@ -47,6 +47,15 @@
                 <div class="analysis-yasa-summary" id="analysis-online-staging-summary">选择采集记录后，将读取该记录在采集期间保存的在线分期结果。</div>
                 <div class="analysis-table-wrap"><table class="analysis-table online-staging-table"><thead><tr><th>输出时间</th><th>Epoch</th><th>分期</th><th>置信度</th><th>质量</th><th>推理模式</th><th>模型延迟</th><th>光刺激</th><th>W</th><th>N1</th><th>N2</th><th>N3</th><th>REM</th></tr></thead><tbody id="analysis-online-staging-body"><tr><td colspan="13"><div class="empty-state">尚未读取在线分期记录</div></td></tr></tbody></table></div>
             </section>
+            <section class="analysis-section sleep-structure-section">
+                <div class="section-heading compact">
+                        <div><p class="eyebrow">ONLINE EEG SLEEP STRUCTURE</p><h3>在线 EEG 睡眠结构</h3></div>
+                    <span class="analysis-yasa-state" id="analysis-sleep-structure-state">尚未计算</span>
+                </div>
+                <div class="analysis-yasa-summary" id="analysis-sleep-structure-summary">分析完成后，这里会显示去重后的在线 EEG 分期结构。</div>
+                <div class="analysis-table-wrap"><table class="analysis-table"><thead><tr><th>分期</th><th>可评分 epoch</th><th>时长</th><th>占可评分比例</th><th>最长连续段</th></tr></thead><tbody id="analysis-sleep-structure-body"><tr><td colspan="5"><div class="empty-state">尚未计算在线睡眠结构</div></td></tr></tbody></table></div>
+                <div class="notice analysis-structure-note">口径：同一 epoch 的中心回顾/当前因果输出只保留一条，优先当前因果；仅统计 stage 明确且质量通过的 epoch。UNKNOWN、质量拒绝不强行分类；N3 候选只有在最终质量通过并输出 N3 时计入确认结果。结果仅用于研究与数据质量评估，不是 PSG 或 YASA 金标准。</div>
+            </section>
             <section class="analysis-section yasa-section">
                 <div class="section-heading compact">
                     <div><p class="eyebrow">YASA OFFLINE VALIDATION</p><h3>YASA 离线睡眠分期复核</h3></div>

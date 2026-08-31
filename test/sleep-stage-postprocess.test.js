@@ -44,10 +44,30 @@ test('rejects bad quality and clears an active N3 state', () => {
     assert.equal(processor.update(input(1, 'N3', undefined, { controlEligible: true })).n3Status, 'trusted');
     const bad = processor.update(input(2, 'N3', undefined, { quality: { ok: false, reason: 'flatline' }, controlEligible: true }));
     assert.equal(bad.stage, 'UNKNOWN');
-    assert.equal(bad.n3Status, 'suppressed');
+    assert.equal(bad.n3Status, 'quality_rejected');
+    assert.equal(bad.candidateStage, 'N3');
     assert.equal(bad.controlEligible, false);
     assert.equal(bad.reason, 'flatline');
     assert.equal(processor.update(input(3, 'N3', undefined, { controlEligible: true })).n3Status, 'trusted');
+});
+
+test('keeps a non-N3 model candidate visible when quality rejects an epoch', () => {
+    const processor = new Postprocess.N3Postprocessor();
+    const result = processor.update(input(1, 'W', [0.97, 0.01, 0.01, 0.005, 0.005], {
+        quality: { ok: false, reason: 'amplitude' },
+    }));
+    assert.equal(result.stage, 'UNKNOWN');
+    assert.equal(result.candidateStage, 'W');
+    assert.equal(result.n3Status, 'quality_rejected');
+    assert.equal(result.reason, 'amplitude');
+});
+
+test('keeps an isolated N3 visible as a candidate without making it scorable', () => {
+    const processor = new Postprocess.N3Postprocessor({ enterConsecutiveEpochs: 2 });
+    const result = processor.update(input(1));
+    assert.equal(result.stage, 'UNKNOWN');
+    assert.equal(result.candidateStage, 'N3');
+    assert.equal(result.candidateConfidence, 0.96);
 });
 
 test('uses configured delta evidence only when explicitly enabled', () => {

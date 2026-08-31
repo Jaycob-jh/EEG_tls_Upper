@@ -7,6 +7,7 @@ const readline = require('node:readline');
 const { parentPort } = require('node:worker_threads');
 const Analysis = require('./src/analysis-core');
 const { readEdf } = require('./src/edf');
+const { computeOnlineSleepMetrics } = require('./src/session-history');
 
 let recording = null;
 
@@ -255,6 +256,7 @@ function summary({ includeEpochs = true, includeSpectra = true } = {}) {
         durationSeconds: recording.durationSeconds,
         integrity: recording.integrity,
         metrics: includeSpectra ? recording.metrics : withoutSpectrum(recording.metrics),
+        onlineSleepMetrics: computeOnlineSleepMetrics(recording.events),
         segments: recording.segments,
         phaseMetrics: phaseMetricsForSummary(includeSpectra),
         warnings: recording.warnings,

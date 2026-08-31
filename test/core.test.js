@@ -124,6 +124,15 @@ test('plan validation requires paired EEG and light actions', () => {
     };
     assert.deepEqual(Core.validatePlan(valid), []);
 
+    const eegOnly = {
+        id: 'p-eeg-only', name: '纯 EEG 采集', enabled: true, eegChannel: 2,
+        actions: [
+            { id: 'start', time: '22:00:00', type: 'eeg_start' },
+            { id: 'stop', time: '06:00:00', type: 'eeg_stop' },
+        ],
+    };
+    assert.deepEqual(Core.validatePlan(eegOnly), []);
+
     valid.actions[1].light.durationMs = -1;
     assert.match(Core.validatePlan(valid).join(';'), /时长不能小于 0/);
 
@@ -139,6 +148,28 @@ test('plan validation requires paired EEG and light actions', () => {
         ...valid,
         actions: valid.actions.map(action => action.type.startsWith('light_') ? { ...action, lightChannel: 1 } : action),
     }).join(';'), /光刺激通道固定为 CH2/);
+});
+
+test('plan validation accepts a pure EEG plan without light actions', () => {
+    const pureEeg = {
+        id: 'p-eeg-only', name: '纯 EEG 采集', enabled: true, eegChannel: 2,
+        actions: [
+            { id: 'impedance', time: '22:00:00', type: 'impedance_check' },
+            { id: 'start', time: '22:01:00', type: 'eeg_start' },
+            { id: 'stop', time: '06:00:00', type: 'eeg_stop' },
+        ],
+    };
+    assert.deepEqual(Core.validatePlan(pureEeg), []);
+    assert.equal(pureEeg.actions.some(action => action.type === 'light_start' || action.type === 'light_stop'), false);
+});
+
+test('new plan defaults and persisted stimulus protocol do not auto-enable light output', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'app.js'), 'utf8');
+    const start = source.indexOf('function defaultPlanActions');
+    const end = source.indexOf('function openPlanDialog', start);
+    assert.ok(start >= 0 && end > start);
+    assert.doesNotMatch(source.slice(start, end), /light_(?:start|stop)/);
+    assert.match(source, /const protocol = \{ \.\.\.Sleep\.normalizeStimulusProtocol\(stored\), enabled: false \}/);
 });
 
 test('plan editor fixes all light actions to CH2', () => {
@@ -457,6 +488,8 @@ test('realtime page exposes a 30-second sleep-stage stimulus protocol with safet
         assert.match(html, new RegExp(`name="sleep-stimulus-stage" value="${stage}"`));
     }
     assert.match(html, /id="sleep-stimulus-confidence"/);
+    assert.match(html, /id="sleep-stimulus-n3-mode"/);
+    assert.match(html, /id="sleep-stimulus-n3-probability"/);
     assert.match(html, /id="sleep-stimulus-consecutive"/);
     assert.match(html, /id="sleep-stimulus-cooldown"/);
     assert.match(html, /id="realtime-light-state"/);
@@ -470,7 +503,8 @@ test('realtime page exposes a 30-second sleep-stage stimulus protocol with safet
     assert.match(app, /onlineInferenceInput\(\)/);
     assert.match(app, /sleepInferenceGeneration/);
     assert.match(html, /当前因果候选从首个 epoch 开始显示/);
-    assert.match(html, /闭环只接受当前因果候选/);
+    assert.match(html, /当前因果输出/);
+    assert.match(html, /候选概率达到阈值/);
     assert.match(html, /sleep-stage-postprocess\.js/);
     assert.match(html, /保守后处理/);
     assert.match(app, /sleepN3Postprocessors/);
