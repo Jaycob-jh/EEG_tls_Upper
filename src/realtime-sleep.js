@@ -8,6 +8,17 @@
 
     const STAGES = Object.freeze(['W', 'N1', 'N2', 'N3', 'REM']);
     const MILLIVOLTS_PER_MICROVOLT = 0.001;
+    // This is an explicit Cao Cao model-input profile, not a universal EEG
+    // or medical standard. Keep it named so offline audits can be compared
+    // with the exact live gate without confusing raw EDF amplitudes with the
+    // training-filtered input.
+    const DEFAULT_EEG_QUALITY_PROFILE = Object.freeze({
+        id: 'cao-cao-model-input-research-v1',
+        label: '曹操模型输入质量门限（临时研究性）',
+        input: 'training-filtered model input',
+        maxAbsUv: 500,
+        minStdUv: 0.01,
+    });
     const DEFAULT_STIMULUS_PROTOCOL = Object.freeze({
         enabled: false,
         // New installations observe trigger decisions first. Actual light output
@@ -18,6 +29,7 @@
         // candidate probability by default. This is separate from the more
         // conservative N3 postprocessor used for scoring/reporting.
         n3TriggerMode: 'probability',
+        // Temporary research starting value; not calibrated against PSG/AASM labels.
         minN3Probability: 0.85,
         minConfidence: 0.8,
         consecutiveEpochs: 2,
@@ -377,12 +389,15 @@
         for (const value of observed) squareSum += (value - mean) ** 2;
         const stdUv = Math.sqrt(squareSum / Math.max(1, observed.length - 1));
         const rmsUv = Math.sqrt(observed.reduce((total, value) => total + value ** 2, 0) / observed.length);
-        const maxAbsUv = Number(options.maxAbsUv || 500);
-        const minStdUv = Number(options.minStdUv || 0.01);
+        const maxAbsUv = Number(options.maxAbsUv || DEFAULT_EEG_QUALITY_PROFILE.maxAbsUv);
+        const minStdUv = Number(options.minStdUv || DEFAULT_EEG_QUALITY_PROFILE.minStdUv);
         const ok = maxAbs <= maxAbsUv && stdUv >= minStdUv;
         return {
             ok,
             reason: ok ? 'ok' : (maxAbs > maxAbsUv ? 'amplitude' : 'flatline'),
+            qualityProfile: DEFAULT_EEG_QUALITY_PROFILE.id,
+            maxAbsThresholdUv: maxAbsUv,
+            minStdThresholdUv: minStdUv,
             validSamples: observed.length,
             ignoredLeadingSamples,
             meanUv: mean,
@@ -433,7 +448,12 @@
             this.temporalContext = Number(options.temporalContext || 21);
             this.inputEpochLength = Math.round(this.inputRateHz * this.epochSeconds);
             this.modelEpochLength = Math.round(this.modelRateHz * this.epochSeconds);
-            this.maxAbsUv = Number(options.maxAbsUv || 500);
+            this.qualityProfile = Object.freeze({
+                ...DEFAULT_EEG_QUALITY_PROFILE,
+                ...(options.qualityProfile && typeof options.qualityProfile === 'object' ? options.qualityProfile : {}),
+            });
+            this.maxAbsUv = Number(options.maxAbsUv || this.qualityProfile.maxAbsUv);
+            this.minStdUv = Number(options.minStdUv || this.qualityProfile.minStdUv);
             // Keep the reusable pipeline strict by default. The desktop live
             // path opts into the device/filter warm-up explicitly.
             this.qualityWarmupSeconds = Math.max(0, Number(options.qualityWarmupSeconds) || 0);
@@ -470,6 +490,7 @@
             this.qualityWarmupRemainingSamples = 0;
             const quality = qualityMetrics(rawEpoch, {
                 maxAbsUv: this.maxAbsUv,
+                minStdUv: this.minStdUv,
                 sampleRateHz: this.inputRateHz,
                 ignoreLeadingSamples: warmupSamples,
                 maxSamples: this.qualityMaxSamples,
@@ -572,6 +593,7 @@
 
     return Object.freeze({
         STAGES,
+        DEFAULT_EEG_QUALITY_PROFILE,
         DEFAULT_STIMULUS_PROTOCOL,
         normalizeStimulusProtocol,
         validateStimulusProtocol,

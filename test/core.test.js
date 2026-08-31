@@ -7,6 +7,7 @@ const path = require('node:path');
 const Core = require('../src/core');
 const BrainLume = require('../src/vendor/BrainLume_Lib');
 const { parseArgs } = require('../debug-cli');
+const QualityAudit = require('../scripts/audit-quality-thresholds');
 
 test('ActionBus F0/00 frame matches the known CRC vector', () => {
     const frame = BrainLume.protocol.encodeCommand(BrainLume.commands.protocolVersion(0x01));
@@ -170,6 +171,23 @@ test('new plan defaults and persisted stimulus protocol do not auto-enable light
     assert.ok(start >= 0 && end > start);
     assert.doesNotMatch(source.slice(start, end), /light_(?:start|stop)/);
     assert.match(source, /const protocol = \{ \.\.\.Sleep\.normalizeStimulusProtocol\(stored\), enabled: false \}/);
+});
+
+test('stimulus control mode keeps manual and model triggers explicitly selectable', () => {
+    assert.equal(Core.normalizeStimulusControlMode('manual'), 'manual');
+    assert.equal(Core.normalizeStimulusControlMode('invalid'), 'manual');
+    assert.equal(Core.stimulusControlModeAllows('manual', 'manual'), true);
+    assert.equal(Core.stimulusControlModeAllows('manual', 'model'), false);
+    assert.equal(Core.stimulusControlModeAllows('model', 'manual'), false);
+    assert.equal(Core.stimulusControlModeAllows('model', 'model'), true);
+    assert.equal(Core.stimulusControlModeAllows('both', 'manual'), true);
+    assert.equal(Core.stimulusControlModeAllows('both', 'model'), true);
+    const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.html'), 'utf8');
+    const app = fs.readFileSync(path.join(__dirname, '..', 'src', 'app.js'), 'utf8');
+    assert.match(html, /id="stimulus-control-mode"/);
+    assert.match(html, /id="home-light-start"/);
+    assert.match(html, /光 CH2 固定/);
+    assert.match(app, /当前控制方式为模型判别，请切换为“手动 \/ 方案”或“两者都可”/);
 });
 
 test('plan editor fixes all light actions to CH2', () => {
@@ -570,4 +588,23 @@ test('CSV escaping preserves commas, quotes and newlines', () => {
     assert.equal(Core.csvEscape('a,b'), '"a,b"');
     assert.equal(Core.csvEscape('a"b'), '"a""b"');
     assert.equal(Core.csvEscape('a\nb'), '"a\nb"');
+});
+
+test('quality audit keeps raw/model threshold semantics and the offline N3 grid bounded', () => {
+    assert.equal(QualityAudit.thresholdQuality({ modelMaxAbsUv: 500, modelStdUv: 1 }, 500), true);
+    assert.equal(QualityAudit.thresholdQuality({ modelMaxAbsUv: 500.1, modelStdUv: 1 }, 500), false);
+    const rows = [
+        { modelMaxAbsUv: 120, modelStdUv: 20, loggedQualityOk: true },
+        { modelMaxAbsUv: 900, modelStdUv: 20, loggedQualityOk: false },
+    ];
+    const sweep = QualityAudit.qualityThresholdSweep(rows, [500, 1000]);
+    assert.deepEqual(sweep.map(item => item.passEpochs), [1, 2]);
+    const n3Rows = [
+        { session: 's1', epochIndex: 0, inferenceMode: 'causal', loggedQualityOk: true, candidateStage: 'N3', n3Probability: 0.55 },
+        { session: 's1', epochIndex: 1, inferenceMode: 'causal', loggedQualityOk: true, candidateStage: 'N3', n3Probability: 0.75 },
+    ];
+    const n3Sweep = QualityAudit.n3ProbabilitySweep(n3Rows);
+    assert.equal(n3Sweep[0].threshold, 0.5);
+    assert.equal(n3Sweep.at(-1).threshold, 0.95);
+    assert.equal(n3Sweep.find(item => item.threshold === 0.5).consecutiveRunsAtLeast2, 1);
 });

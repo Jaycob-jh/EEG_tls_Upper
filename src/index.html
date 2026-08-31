@@ -86,6 +86,19 @@
                             <button class="button secondary" id="edit-plan-button-home" type="button" disabled>编辑所选</button>
                             <button class="button secondary" id="manage-plan-button-home" type="button">方案管理</button>
                         </div>
+                        <section class="home-stimulus-control" aria-labelledby="home-stimulus-control-title">
+                            <div class="home-stimulus-heading">
+                                <div><p class="eyebrow">LIGHT OUTPUT</p><strong id="home-stimulus-control-title">光刺激控制</strong><small>光 CH2 固定 · 手动参数仅用于本次启动</small></div>
+                                <label>控制方式<select id="stimulus-control-mode"><option value="manual">手动 / 方案</option><option value="model">模型判别</option><option value="both">手动 / 方案 + 模型</option></select></label>
+                            </div>
+                            <div class="home-stimulus-form">
+                                <label>频率 (Hz)<input id="home-light-frequency" type="number" min="1" max="100" step="1" value="10"></label>
+                                <label>功率/占空比 (%)<input id="home-light-power" type="number" min="0" max="100" step="1" value="5"></label>
+                                <label>单次时长 (ms)<input id="home-light-duration" type="number" min="1" step="1" value="1000"></label>
+                                <div class="home-stimulus-buttons"><button class="button success" id="home-light-start" type="button">手动启动</button><button class="button danger" id="home-light-stop" type="button">停止</button></div>
+                            </div>
+                            <small class="home-stimulus-detail" id="stimulus-control-detail">当前允许手动启动和方案启动；实时模型协议不会触发光刺激。</small>
+                        </section>
                         <div class="quick-actions">
                             <button class="action-button" id="impedance-button"><span>Ω</span><div><strong>手动检测阻抗</strong><small>立即执行 · 不属于每日方案</small></div></button>
                             <button class="action-button" id="status-button"><span>i</span><div><strong>查询状态</strong><small>电量与运行状态</small></div></button>
@@ -126,7 +139,7 @@
                         <div class="section-heading compact"><div><p class="eyebrow">PIPELINE STATUS</p><h3>实时处理状态</h3></div></div>
                         <div class="analysis-table-wrap"><table class="analysis-table"><tbody id="realtime-status-body">
                             <tr><th>输入</th><td>当前选择通道，250 SPS，µV</td></tr>
-                            <tr><th>质量门控</th><td>平线与绝对幅值检查</td></tr>
+                            <tr><th>质量门控</th><td>模型滤波后绝对幅值 ≤ 500 µV（临时研究性）及平线检查</td></tr>
                             <tr><th>推理状态</th><td id="realtime-inference-state">等待 EEG</td></tr>
                             <tr><th>闭环输出</th><td id="realtime-closed-loop-state">未启用</td></tr>
                         </tbody></table></div>
@@ -137,7 +150,7 @@
                         <div><p class="eyebrow">STAGE-TRIGGERED STIMULATION</p><h3>分期触发刺激协议</h3></div>
                         <label class="realtime-enable"><input type="checkbox" id="sleep-stimulus-enabled"> 启用协议</label>
                     </div>
-                    <div class="sleep-stimulus-warning">本协议的推荐用途是“只勾选 N3，按 N3 候选概率自动触发”。分期显示仍经过保守后处理；选择“概率达到阈值”后，不必等待保守分期显示为“N3 已确认”，但仍必须满足当前因果输出、收满 21 个 epoch、上下文和信号质量通过、连续命中及设备状态回读；中心回顾输出永远不会触发。1 个 epoch 约 30 秒，推荐连续 2 个约 60 秒，避免单个误判立即发光。默认是“验证模式”，只记录命中、不向设备发光；确认记录稳定后，再手动关闭验证模式并启用协议。点击“全部停止”、停止 EEG、关闭实时分析或 BLE 断开都会解除协议；每次启动软件也需要重新启用。</div>
+                    <div class="sleep-stimulus-warning">本协议用于研究性验证：可只勾选 N3，按候选概率自动记录命中。分期显示仍经过保守后处理；选择“概率达到阈值”后，不必等待保守分期显示为“N3 已确认”，但仍必须满足当前因果输出、收满 21 个 epoch、上下文和信号质量通过、连续命中及设备状态回读；中心回顾输出永远不会触发。实时质量门控使用模型滤波后的 500 µV 临时研究性门限，不直接对原始 EDF 数值判定，也不会根据未标注数据自动改阈值。1 个 epoch 约 30 秒，连续 2 个约 60 秒。默认是“验证模式”，只记录命中、不向设备发光；确认记录稳定并完成 PSG/人工标签校准后，再手动关闭验证模式并启用协议。点击“全部停止”、停止 EEG、关闭实时分析或 BLE 断开都会解除协议；每次启动软件也需要重新启用。</div>
                     <div class="sleep-stimulus-form">
                         <fieldset class="sleep-stage-selector">
                             <legend>目标分期（可多选）</legend>
@@ -147,8 +160,8 @@
                             <label><input type="checkbox" name="sleep-stimulus-stage" value="N3"> N3</label>
                             <label><input type="checkbox" name="sleep-stimulus-stage" value="REM"> REM</label>
                         </fieldset>
-                        <label>N3 触发依据<select id="sleep-stimulus-n3-mode"><option value="probability">候选概率达到阈值（推荐）</option><option value="confirmed">保守确认后触发</option></select></label>
-                        <label>N3 概率阈值 (%)<input id="sleep-stimulus-n3-probability" type="number" min="50" max="100" step="1" value="85"></label>
+                        <label>N3 触发依据<select id="sleep-stimulus-n3-mode"><option value="probability">候选概率达到阈值（研究性）</option><option value="confirmed">保守确认后触发</option></select></label>
+                        <label>N3 概率阈值（临时研究性，%）<input id="sleep-stimulus-n3-probability" type="number" min="50" max="100" step="1" value="85"></label>
                         <label>其他分期置信度 (%)<input id="sleep-stimulus-confidence" type="number" min="50" max="100" step="1" value="80"></label>
                         <label>连续命中 (epoch)<input id="sleep-stimulus-consecutive" type="number" min="1" max="10" step="1" value="2"></label>
                         <label>光刺激通道<select id="sleep-stimulus-channel"><option value="1">通道 1</option><option value="2">通道 2</option></select></label>

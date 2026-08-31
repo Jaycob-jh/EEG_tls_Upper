@@ -11,6 +11,12 @@
         'light_start', 'light_stop', 'status_query',
     ]);
     const PLAN_MODES = Object.freeze(['clock', 'relative']);
+    const STIMULUS_CONTROL_MODES = Object.freeze(['manual', 'model', 'both']);
+    const STIMULUS_CONTROL_MODE_LABELS = Object.freeze({
+        manual: '手动 / 方案',
+        model: '模型判别',
+        both: '手动 / 方案 + 模型',
+    });
     const START_GRACE_SECONDS = 5;
     const SAFETY_ACTIONS = new Set(['light_stop', 'eeg_stop']);
     const DAILY_START_ACTIONS = new Set(['light_start', 'eeg_start']);
@@ -34,6 +40,20 @@
             xRangeSeconds: WAVEFORM_X_RANGES_SECONDS.includes(xRangeSeconds) ? xRangeSeconds : 20,
             refreshFps: WAVEFORM_REFRESH_RATES_FPS.includes(refreshFps) ? refreshFps : 30,
         };
+    }
+
+    function normalizeStimulusControlMode(value) {
+        const mode = String(value || '').trim();
+        return STIMULUS_CONTROL_MODES.includes(mode) ? mode : 'manual';
+    }
+
+    // "manual" includes an explicitly started light command and a user-created
+    // time plan. The model path is kept separate so selecting model-only cannot
+    // silently turn a scheduled/manual light action into hardware output.
+    function stimulusControlModeAllows(mode, source = 'manual') {
+        const normalizedMode = normalizeStimulusControlMode(mode);
+        const normalizedSource = source === 'model' ? 'model' : 'manual';
+        return normalizedMode === 'both' || normalizedMode === normalizedSource;
     }
 
     function formatDuration(seconds) {
@@ -530,7 +550,8 @@
     }
 
     return Object.freeze({
-        ACTION_TYPES, PLAN_MODES, START_GRACE_SECONDS,
+        ACTION_TYPES, PLAN_MODES, STIMULUS_CONTROL_MODES, STIMULUS_CONTROL_MODE_LABELS,
+        normalizeStimulusControlMode, stimulusControlModeAllows, START_GRACE_SECONDS,
         WAVEFORM_X_RANGES_SECONDS, WAVEFORM_REFRESH_RATES_FPS, normalizeWaveformDisplay,
         formatDuration, sampleCountToSeconds, waveformScale, deviceOperationPresentation,
         FIXED_PLAN_EEG_CHANNEL, FIXED_PLAN_LIGHT_CHANNEL, normalizePlan,
