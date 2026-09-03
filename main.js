@@ -167,6 +167,54 @@ function decryptGithubToken(ciphertext) {
     }
 }
 
+function readGithubCliToken() {
+    return new Promise(resolve => {
+        const childEnv = { ...process.env };
+        delete childEnv.ALL_PROXY;
+        delete childEnv.HTTP_PROXY;
+        delete childEnv.HTTPS_PROXY;
+        const child = spawn('gh', ['auth', 'token', '--hostname', 'github.com'], {
+            cwd: __dirname,
+            env: childEnv,
+            windowsHide: true,
+            stdio: ['ignore', 'pipe', 'ignore'],
+        });
+        let output = '';
+        let settled = false;
+        const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            child.kill();
+            resolve('');
+        }, 5000);
+        child.stdout.on('data', chunk => {
+            if (output.length < 1000) output += chunk.toString();
+        });
+        child.once('error', () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve('');
+        });
+        child.once('close', code => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(code === 0 ? output.trim() : '');
+        });
+    });
+}
+
+async function adoptGithubCliToken() {
+    const state = await getGithubSyncState();
+    if (decryptGithubToken(state.tokenCiphertext)) return false;
+    const token = await readGithubCliToken();
+    if (!token || !githubEncryptionAvailable()) return false;
+    state.tokenCiphertext = encryptGithubToken(token);
+    await persistGithubSyncState();
+    return true;
+}
+
 function normalizeGithubQueueFile(value) {
     const source = value && typeof value === 'object' ? value : {};
     return {
@@ -1415,7 +1463,11 @@ app.whenReady().then(async () => {
     session.defaultSession.setDevicePermissionHandler(details => details.deviceType === 'bluetooth');
     configureApplicationMenu();
     registerIpc();
-    void getGithubSyncState().then(() => processGithubUploadQueue()).catch(error => {
+    void getGithubSyncState().then(async () => {
+        const adopted = await adoptGithubCliToken();
+        if (adopted) await emitGithubSyncStatus();
+        return processGithubUploadQueue();
+    }).catch(error => {
         console.error(`GitHub EDF 同步队列初始化失败：${error.message}`);
     });
     if (debugCliMode) createDebugWindow(); else createWindow();

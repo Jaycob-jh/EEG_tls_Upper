@@ -63,6 +63,8 @@ test('records UI and IPC expose history upload without broadening the upload sco
     assert.match(main, /github-sync:history-candidates/);
     assert.match(main, /github-sync:upload-history/);
     assert.match(main, /recording\.eventsPath/);
+    assert.match(main, /gh', \['auth', 'token'/);
+    assert.match(main, /safeStorage\.encryptString/);
     assert.match(preload, /getGithubHistoryCandidates/);
     assert.match(preload, /uploadGithubHistory/);
     assert.match(main, /自动 EDF 归档只允许私有 GitHub 仓库/);

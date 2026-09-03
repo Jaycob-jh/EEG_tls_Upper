@@ -193,7 +193,7 @@
                         <div><p class="eyebrow">GITHUB EDF ARCHIVE</p><h3>GitHub EDF 数据存档</h3></div>
                         <span class="github-sync-state" id="github-sync-status">未配置</span>
                     </div>
-                    <div class="notice github-sync-note">默认只在一次 EEG 记录停止、EDF 完整封存且实际发生过光刺激后上传 EDF，并同时上传同一记录的 events.jsonl；同一记录内多次刺激合并为一个 EDF。点击“同步前几天数据”可选择今天以前的已完成 EDF，已有 events 会一并上传。仅允许私有仓库，令牌使用 macOS 钥匙串加密保存，不写入仓库。</div>
+                    <div class="notice github-sync-note">默认只在一次 EEG 记录停止、EDF 完整封存且实际发生过光刺激后上传 EDF，并同时上传同一记录的 events.jsonl；同一记录内多次刺激合并为一个 EDF。点击“同步前几天数据”可选择今天以前的已完成 EDF，已有 events 会一并上传。仅允许私有仓库；若本机已用 gh 登录，应用会尝试自动采用该凭据，否则在此保存令牌（macOS 钥匙串 / Windows DPAPI），不会写入仓库。</div>
                     <div class="github-sync-form">
                         <label>GitHub 仓库<input id="github-repository" type="text" value="Jaycob-jh/EEG_tls_Upper" placeholder="owner/repository" autocomplete="off"></label>
                         <label>分支<input id="github-branch" type="text" value="main" autocomplete="off"></label>

@@ -157,6 +157,8 @@ GitHub 归档默认使用 `Jaycob-jh/EEG_tls_Upper` 的 `main` 分支和 `data/e
 应用只接受私有仓库，以避免原始 EEG 外泄；建议为原始数据单独建立私有仓库。需要具有该仓库
 Contents 读写权限的 GitHub Personal Access Token，令牌只在保存时读取，并通过 macOS 钥匙串或
 Windows DPAPI 加密保存，不写入项目文件、`session.json` 或 Git 历史。
+如果本机已通过 GitHub CLI（`gh auth login`）登录，应用首次启动且尚未配置令牌时会尝试把该凭据
+安全转存到应用的系统安全存储；未安装 `gh` 或未登录时仍可在记录页手动保存令牌。
 
 新记录只有在真实设备光刺激产生 `light_started` 事件并完成 EEG 停止后才自动排队；仅配置光刺激、
 shadow/验证模式记录或没有实际发光不会触发自动归档。上传是本地串行队列，网络中断、代理不可用、
