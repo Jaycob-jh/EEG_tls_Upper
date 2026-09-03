@@ -1,0 +1,5 @@
+{"ts":"2026-08-31T12:25:18.527+08:00","level":"info","action":"session_started","sessionId":"session_dcb1fd49-f097-48e7-bd2e-5a92651e6b74"}
+{"ts":"2026-08-31T12:25:18.554+08:00","sessionId":"session_dcb1fd49-f097-48e7-bd2e-5a92651e6b74","level":"info","action":"eeg_started","channel":2}
+{"ts":"2026-08-31T12:25:26.102+08:00","sessionId":"session_dcb1fd49-f097-48e7-bd2e-5a92651e6b74","level":"error","action":"ui_action_failed","error":"阻抗检测前必须停止普通 EEG"}
+{"ts":"2026-08-31T12:25:28.803+08:00","sessionId":"session_dcb1fd49-f097-48e7-bd2e-5a92651e6b74","level":"info","action":"eeg_stopped","reason":"manual"}
+{"ts":"2026-08-31T12:25:28.809+08:00","level":"info","action":"session_stopped","status":"completed","reason":"manual","rows":2555}

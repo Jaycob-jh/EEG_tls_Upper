@@ -1,0 +1,4 @@
+{"ts":"2026-08-29T21:49:53.556+08:00","level":"info","action":"session_started","sessionId":"session_421a58f0-f659-4a73-a4bd-a899a4493f68"}
+{"ts":"2026-08-29T21:49:55.469+08:00","sessionId":"session_421a58f0-f659-4a73-a4bd-a899a4493f68","level":"info","action":"eeg_config_already_applied","channel":2,"impedance":false,"registersHex":"1E96C0EC008160818181818181020000000000000020000000CF8063800300"}
+{"ts":"2026-08-29T21:49:55.471+08:00","sessionId":"session_421a58f0-f659-4a73-a4bd-a899a4493f68","level":"info","action":"eeg_configured","channel":2,"impedance":false,"registersHex":"96C0EC008160818181818181020000000000000020000000CF8063800300"}
+{"ts":"2026-08-29T21:49:57.482+08:00","level":"info","action":"session_stopped","status":"failed","reason":"No response for Func 0x21 after 2000ms","rows":1064}
