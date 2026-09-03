@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "model_id": "cca1a066-c386-4eb4-9eb7-6251e8748e2a",
+  "source_experiment_id": "cca1a066-c386-4eb4-9eb7-6251e8748e2a",
+  "offline_training_pipeline": "DOD-H pretrained -> wearable fp1fp2 Stage-1 fine-tune",
+  "runtime_online_finetuning": false,
+  "source_checkpoint_sha256": "DB9AF6C81FF9426B828248817187CA684C31781394489BB54B7C9E371C077D0E",
+  "source_checkpoint": {
+    "description": "CNN wearable fp1fp2 Stage-1 fine-tuning checkpoint",
+    "filename": "best_model.gz",
+    "sha256": "DB9AF6C81FF9426B828248817187CA684C31781394489BB54B7C9E371C077D0E"
+  },
+  "pretraining_checkpoint": {
+    "description": "CNN DOD-H pretraining checkpoint",
+    "filename": "best_model.gz",
+    "sha256": "6A7FFAE28F242B56C3109C4461B1057A7A592F0ED450848487A38DE27C78CBA1"
+  },
+  "upper_assets": {
+    "onnx": {
+      "path": "models/stage1_sleep.onnx",
+      "sha256": "501C22F7AA88EC89EE499B77C556B2FB063E21E522D3768DF3A093DE27EDA789"
+    },
+    "onnx_data": {
+      "path": "models/stage1_sleep.onnx.data",
+      "sha256": "177729D48A6C94FDAC7B8A2D55FFBC20F44C6DCEA3A8F43D70BDF933919ECE13"
+    },
+    "metadata": {
+      "path": "models/stage1_sleep.metadata.json",
+      "sha256": "018DC596F79AD651814135E1B0301019761C86D5B3061CD38C84696F0AEF2DEF"
+    }
+  },
+  "input_contract": {
+    "lead": "CH2 bipolar differential EEG lead with two mutually referenced electrodes",
+    "input_names": [
+      "eeg",
+      "epoch_index",
+      "epoch_cycle_index"
+    ],
+    "eeg_shape": [
+      1,
+      21,
+      1,
+      3000
+    ],
+    "eeg_unit": "mV",
+    "device_eeg_unit": "uV"
+  },
+  "preprocessing": {
+    "model_filter": "training filter_base: 0.4-18 Hz band-pass plus training notch chain",
+    "input_eeg_unit": "mV",
+    "device_eeg_unit": "uV",
+    "device_to_model_scale": 0.001,
+    "resample_from_hz": 250,
+    "resample_to_hz": 100,
+    "epoch_seconds": 30,
+    "samples_per_epoch": 3000,
+    "temporal_context": 21,
+    "resampling_time_axis": "source-time grid used by training"
+  },
+  "temporal_context": 21,
+  "output_contract": {
+    "output_names": [
+      "logits",
+      "prob"
+    ],
+    "output_layout": "temporal_context_by_5",
+    "probability_shape": [
+      21,
+      5
+    ],
+    "stage_names": {
+      "0": "W",
+      "1": "N1",
+      "2": "N2",
+      "3": "N3",
+      "4": "REM"
+    },
+    "center": {
+      "index": 10,
+      "delay_epochs": 10,
+      "delay_seconds": 300,
+      "status": "training-consistent center output",
+      "control_eligible": false
+    },
+    "causal_candidate": {
+      "index": 20,
+      "status": "experimental/unvalidated",
+      "independently_causal_trained": false,
+      "control_eligible": false,
+      "description": "Latest-epoch candidate assembled without future input, but not independently causally trained or validated."
+    }
+  },
+  "center_output_index": 10,
+  "causal_output_index": 20,
+  "causal_status": "experimental/unvalidated",
+  "active_stimulation_default": false,
+  "requires_manual_validation": true,
+  "safety": {
+    "n3_active_stimulation_allowed": false,
+    "manual_validation_requirements": [
+      "synchronized human PSG five-class labels",
+      "subject-level train/validation/test split",
+      "independent causal-model validation",
+      "hardware safety approval"
+    ],
+    "label_prohibition": "Do not use YASA or current model outputs as the gold-standard label."
+  },
+  "training_boundary": {
+    "upper_runtime": "ONNX inference only; no online learning or weight updates.",
+    "fine_tuning_entry": "CNN best_model.gz",
+    "onnx_training_checkpoint": false,
+    "accuracy_claim_allowed_without_labels": false
+  },
+  "privacy": {
+    "contains_user_names": false,
+    "contains_raw_data_paths": false,
+    "contains_real_subject_information": false
+  }
+}

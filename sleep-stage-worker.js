@@ -3,15 +3,28 @@
 const { parentPort } = require('node:worker_threads');
 const path = require('node:path');
 const ort = require('onnxruntime-node');
+const {
+    createValidatedSession,
+    inspectRuntimeOutputs,
+    INTEGRITY_ERROR_CODE,
+} = require('./src/sleep-model-integrity');
 
 const modelPath = path.join(__dirname, 'models', 'stage1_sleep.onnx');
 let sessionPromise = null;
+let integrityReport = null;
 
 function session() {
     if (!sessionPromise) {
-        sessionPromise = ort.InferenceSession.create(modelPath, {
+        sessionPromise = createValidatedSession({ rootDir: __dirname, modelPath }, targetPath => ort.InferenceSession.create(targetPath, {
             executionProviders: ['cpu'],
             graphOptimizationLevel: 'all',
+        })).then(result => {
+            integrityReport = {
+                assets: result.assetReport.actualHashes,
+                metadata: result.assetReport.metadataSummary,
+                interface: result.interfaceReport,
+            };
+            return result.session;
         });
     }
     return sessionPromise;
@@ -36,7 +49,12 @@ parentPort.on('message', async message => {
     try {
         const model = await session();
         if (type === 'info') {
-            parentPort.postMessage({ id, ok: true, result: { modelPath, inputs: model.inputNames, outputs: model.outputNames } });
+            parentPort.postMessage({ id, ok: true, result: {
+                modelPath,
+                inputs: model.inputNames,
+                outputs: model.outputNames,
+                integrity: integrityReport,
+            } });
             return;
         }
         if (type !== 'infer') throw new Error(`Unknown sleep worker request: ${type}`);
@@ -49,6 +67,12 @@ parentPort.on('message', async message => {
             epoch_cycle_index: new ort.Tensor('float32', Float32Array.from(message.epochCycleIndex), [1, temporalContext, 5]),
         };
         const output = await model.run(feeds);
+        const runtimeOutputReport = inspectRuntimeOutputs(output);
+        if (!runtimeOutputReport.ok) {
+            const error = new Error(`Sleep-model runtime output integrity check failed: ${runtimeOutputReport.errors.join('; ')}`);
+            error.code = INTEGRITY_ERROR_CODE;
+            throw error;
+        }
         const probabilities = selectedProbability(output.prob, temporalContext, outputIndex);
         const probabilitySum = probabilities.reduce((sum, value) => sum + value, 0);
         const normalized = probabilitySum > 0 ? probabilities.map(value => value / probabilitySum) : probabilities;
@@ -60,6 +84,11 @@ parentPort.on('message', async message => {
             selectedOutputIndex: outputIndex,
         } });
     } catch (error) {
-        parentPort.postMessage({ id, ok: false, error: error?.stack || error?.message || String(error) });
+        parentPort.postMessage({
+            id,
+            ok: false,
+            errorCode: error?.code || null,
+            error: error?.stack || error?.message || String(error),
+        });
     }
 });
