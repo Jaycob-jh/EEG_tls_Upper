@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, dialog, ipcMain, shell, session, Menu } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell, session, Menu, net, safeStorage } = require('electron');
 const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
@@ -12,6 +12,7 @@ const Core = require('./src/core');
 const AnalysisReport = require('./src/analysis-report');
 const { parseSessionStagingHistory } = require('./src/session-history');
 const { EdfWriter } = require('./src/edf');
+const GithubSync = require('./src/github-sync');
 const BLE_DEVICE_NAME = 'BrainLume2.0C';
 const APP_ICON_PATH = path.join(__dirname, 'assets', 'cao-cao-icon-original.png');
 
@@ -26,6 +27,9 @@ let bluetoothCandidates = new Map();
 let bluetoothSelectionTimer = null;
 const activeRecordings = new Map();
 const activeAnalyses = new Map();
+let githubSyncState = null;
+let githubSyncStatePromise = null;
+let githubUploadProcessPromise = null;
 let sleepWorkerEntry = null;
 const deviceDiagnosticMode = process.argv.includes('--device-diagnostic');
 const debugCliMode = process.argv.includes('--debug-cli');
@@ -133,6 +137,468 @@ async function writeJsonAtomic(filePath, value) {
     const temporary = `${filePath}.${process.pid}.tmp`;
     await fsp.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
     await fsp.rename(temporary, filePath);
+}
+
+function githubSyncStatePath() {
+    return path.join(app.getPath('userData'), 'github-sync-state.json');
+}
+
+function githubEncryptionAvailable() {
+    try {
+        return Boolean(safeStorage && safeStorage.isEncryptionAvailable());
+    } catch {
+        return false;
+    }
+}
+
+function encryptGithubToken(token) {
+    const value = String(token || '').trim();
+    if (!value) return null;
+    if (!githubEncryptionAvailable()) throw new Error('当前系统的安全存储不可用，无法安全保存 GitHub 令牌');
+    return safeStorage.encryptString(value).toString('base64');
+}
+
+function decryptGithubToken(ciphertext) {
+    if (!ciphertext || !githubEncryptionAvailable()) return '';
+    try {
+        return safeStorage.decryptString(Buffer.from(String(ciphertext), 'base64')).trim();
+    } catch {
+        return '';
+    }
+}
+
+function normalizeGithubQueueFile(value) {
+    const source = value && typeof value === 'object' ? value : {};
+    return {
+        kind: source.kind === 'events' ? 'events' : 'edf',
+        localPath: String(source.localPath || source.filePath || '').slice(0, 2000),
+        archivePath: String(source.archivePath || source.path || '').slice(0, 500),
+    };
+}
+
+function normalizeGithubQueueItem(value) {
+    const source = value && typeof value === 'object' ? value : {};
+    const config = GithubSync.normalizeGithubConfig(source.config);
+    const session = {
+        id: String(source.session?.id || source.sessionId || '').slice(0, 120),
+        startedAt: source.session?.startedAt || null,
+    };
+    const fallbackFiles = source.filePath ? [{
+        kind: 'edf',
+        localPath: source.filePath,
+        archivePath: source.archivePath || GithubSync.buildEdfArchivePath(session, config),
+    }] : [];
+    const files = (Array.isArray(source.files) ? source.files : fallbackFiles)
+        .map(normalizeGithubQueueFile)
+        .filter(file => file.localPath && file.archivePath);
+    const edfFile = files.find(file => file.kind === 'edf') || files[0] || { localPath: '', archivePath: '' };
+    return {
+        sessionId: String(source.sessionId || '').slice(0, 120),
+        sessionJsonPath: String(source.sessionJsonPath || '').slice(0, 2000),
+        filePath: String(source.filePath || edfFile.localPath || '').slice(0, 2000),
+        eventsPath: String(source.eventsPath || files.find(file => file.kind === 'events')?.localPath || '').slice(0, 2000),
+        files,
+        session,
+        config,
+        archivePath: String(source.archivePath || edfFile.archivePath || GithubSync.buildEdfArchivePath(session, config)).slice(0, 500),
+        eventsExpected: source.eventsExpected === true,
+        eventsMissing: source.eventsMissing === true,
+        reason: source.reason === 'manual' ? 'manual' : 'automatic',
+        status: ['queued', 'uploading', 'failed', 'not_configured'].includes(source.status) ? source.status : 'queued',
+        attempts: Number.isFinite(Number(source.attempts)) ? Math.max(0, Number(source.attempts)) : 0,
+        queuedAt: source.queuedAt || null,
+        lastAttemptAt: source.lastAttemptAt || null,
+        error: source.error ? String(source.error).slice(0, 300) : null,
+    };
+}
+
+async function getGithubSyncState() {
+    if (githubSyncState) return githubSyncState;
+    if (!githubSyncStatePromise) {
+        githubSyncStatePromise = (async () => {
+            const stored = await readJson(githubSyncStatePath(), null);
+            const queue = Array.isArray(stored?.queue)
+                ? stored.queue.map(normalizeGithubQueueItem).filter(item => item.sessionId && item.files.some(file => file.kind === 'edf'))
+                : [];
+            githubSyncState = {
+                version: 1,
+                config: GithubSync.normalizeGithubConfig(stored?.config),
+                tokenCiphertext: typeof stored?.tokenCiphertext === 'string' ? stored.tokenCiphertext : null,
+                queue,
+            };
+            return githubSyncState;
+        })().finally(() => { githubSyncStatePromise = null; });
+    }
+    return githubSyncStatePromise;
+}
+
+async function persistGithubSyncState() {
+    const state = await getGithubSyncState();
+    await writeJsonAtomic(githubSyncStatePath(), {
+        version: 1,
+        config: GithubSync.redactGithubConfig(state.config),
+        tokenCiphertext: state.tokenCiphertext || null,
+        queue: state.queue.map(normalizeGithubQueueItem),
+    });
+}
+
+function publicGithubSyncState(state) {
+    return {
+        config: GithubSync.redactGithubConfig(state.config),
+        tokenStored: Boolean(state.tokenCiphertext),
+        encryptionAvailable: githubEncryptionAvailable(),
+        queue: state.queue.map(item => ({
+            sessionId: item.sessionId,
+            repository: item.config.repository,
+            path: item.archivePath,
+            files: item.files.map(file => ({ kind: file.kind, path: file.archivePath })),
+            eventsExpected: item.eventsExpected,
+            eventsMissing: item.eventsMissing,
+            status: item.status,
+            reason: item.reason,
+            attempts: item.attempts,
+            queuedAt: item.queuedAt,
+            lastAttemptAt: item.lastAttemptAt,
+            error: item.error,
+        })),
+    };
+}
+
+async function emitGithubSyncStatus(extra = {}) {
+    const state = await getGithubSyncState();
+    const payload = { ...publicGithubSyncState(state), ...extra };
+    for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) window.webContents.send('github-sync:status', payload);
+    }
+    return payload;
+}
+
+function githubApiRequest(pathname, { method = 'GET', token = '', body = null } = {}) {
+    return new Promise((resolve, reject) => {
+        if (!net?.request) {
+            reject(new Error('当前运行环境不支持 GitHub 网络请求'));
+            return;
+        }
+        const request = net.request({
+            method,
+            url: `https://api.github.com${pathname}`,
+            session: session.defaultSession,
+        });
+        let settled = false;
+        const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            request.abort();
+            reject(new Error('GitHub 请求超时，请检查网络或代理连通性'));
+        }, 30000);
+        const finish = (callback, value) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            callback(value);
+        };
+        request.setHeader('Accept', 'application/vnd.github+json');
+        request.setHeader('User-Agent', 'CaoCao-EEG-Desktop/0.3.1');
+        request.setHeader('X-GitHub-Api-Version', '2022-11-28');
+        if (token) request.setHeader('Authorization', `Bearer ${token}`);
+        if (body !== null) request.setHeader('Content-Type', 'application/json');
+        request.on('response', response => {
+            const chunks = [];
+            response.on('data', chunk => chunks.push(Buffer.from(chunk)));
+            response.on('end', () => {
+                const text = Buffer.concat(chunks).toString('utf8');
+                let payload = null;
+                try { payload = text ? JSON.parse(text) : null; } catch { payload = { message: text.slice(0, 300) }; }
+                if (response.statusCode >= 400) {
+                    const error = new Error(`GitHub 请求失败（${response.statusCode}）：${payload?.message || '未知错误'}`);
+                    error.statusCode = response.statusCode;
+                    finish(reject, error);
+                    return;
+                }
+                finish(resolve, payload);
+            });
+            response.on('error', error => finish(reject, error));
+        });
+        request.on('error', error => finish(reject, error));
+        if (body !== null) request.write(JSON.stringify(body));
+        request.end();
+    });
+}
+
+async function githubRepositoryInfo(config, token) {
+    if (!token) throw new Error('尚未配置 GitHub 令牌，请在“记录”页面保存令牌后再测试');
+    const { owner, name } = GithubSync.parseRepository(config.repository);
+    const repository = await githubApiRequest(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`, { token });
+    if (repository.private !== true) {
+        throw new Error('为避免原始 EEG 外泄，自动 EDF 归档只允许私有 GitHub 仓库');
+    }
+    return repository;
+}
+
+function sessionsRootPath() {
+    return `${path.resolve(appDataPaths().sessions)}${path.sep}`;
+}
+
+function isSessionPath(targetPath) {
+    const resolved = path.resolve(String(targetPath || ''));
+    return resolved.startsWith(sessionsRootPath());
+}
+
+async function updateSessionGithubUpload(sessionJsonPath, patch) {
+    if (!isSessionPath(sessionJsonPath)) throw new Error('GitHub 同步目标不在受控会话目录中');
+    const metadata = await readJson(sessionJsonPath, null);
+    if (!metadata) return null;
+    metadata.githubUpload = GithubSync.normalizeUploadStatus({ ...metadata.githubUpload, ...patch });
+    await writeJsonAtomic(sessionJsonPath, metadata);
+    return metadata.githubUpload;
+}
+
+async function uploadGithubFile(item, file, token, repository, branch) {
+    if (!isSessionPath(file.localPath)) throw new Error(`${file.kind === 'events' ? 'events' : 'EDF'} 路径不在受控会话目录中`);
+    const stat = await fsp.stat(file.localPath);
+    if (!stat.isFile()) throw new Error(`${file.kind === 'events' ? 'events' : 'EDF'} 目标不是文件`);
+    if (stat.size <= 0) throw new Error(`${file.kind === 'events' ? 'events' : 'EDF'} 文件为空，暂不上传`);
+    if (stat.size > GithubSync.MAX_CONTENT_API_BYTES) {
+        throw new Error(`${file.kind === 'events' ? 'events' : 'EDF'} 文件超过 GitHub Contents API 安全上限（${Math.round(GithubSync.MAX_CONTENT_API_BYTES / 1024 / 1024)} MB）`);
+    }
+    const contentPath = GithubSync.contentApiPath(item.config.repository, file.archivePath);
+    let existing = null;
+    try {
+        existing = await githubApiRequest(`${contentPath}?ref=${encodeURIComponent(branch)}`, { token });
+    } catch (error) {
+        if (error.statusCode !== 404) throw error;
+    }
+    const content = (await fsp.readFile(file.localPath)).toString('base64');
+    const response = await githubApiRequest(contentPath, {
+        method: 'PUT',
+        token,
+        body: {
+            message: `archive: EEG ${file.kind === 'events' ? 'events' : 'EDF'} ${item.sessionId}`,
+            content,
+            branch,
+            ...(existing?.sha ? { sha: existing.sha } : {}),
+        },
+    });
+    return {
+        repository: item.config.repository,
+        branch,
+        kind: file.kind,
+        path: file.archivePath,
+        fileUrl: response?.content?.html_url || null,
+        commitUrl: response?.commit?.html_url || null,
+        commitSha: response?.commit?.sha || null,
+        bytes: stat.size,
+    };
+}
+
+async function processGithubUploadQueue() {
+    if (githubUploadProcessPromise) return githubUploadProcessPromise;
+    githubUploadProcessPromise = (async () => {
+        const state = await getGithubSyncState();
+        for (const item of [...state.queue]) {
+            const token = decryptGithubToken(state.tokenCiphertext);
+            if (!token) {
+                item.status = 'not_configured';
+                item.error = '未配置可用的 GitHub 令牌';
+                await persistGithubSyncState();
+                await updateSessionGithubUpload(item.sessionJsonPath, {
+                    status: 'not_configured', attempts: item.attempts, error: item.error,
+                    repository: item.config.repository, path: item.archivePath, branch: item.config.branch,
+                    files: item.files.map(file => ({ kind: file.kind, path: file.archivePath })),
+                    eventsExpected: item.eventsExpected, eventsMissing: item.eventsMissing,
+                }).catch(() => {});
+                await emitGithubSyncStatus();
+                continue;
+            }
+            item.status = 'uploading';
+            item.attempts += 1;
+            item.lastAttemptAt = nowIso();
+            item.error = null;
+            await persistGithubSyncState();
+            await updateSessionGithubUpload(item.sessionJsonPath, {
+                status: 'uploading', attempts: item.attempts, startedAt: item.lastAttemptAt,
+                repository: item.config.repository, path: item.archivePath, branch: item.config.branch,
+                files: item.files.map(file => ({ kind: file.kind, path: file.archivePath })),
+                eventsExpected: item.eventsExpected, eventsMissing: item.eventsMissing,
+            }).catch(() => {});
+            await emitGithubSyncStatus();
+            try {
+                const repository = await githubRepositoryInfo(item.config, token);
+                const branch = item.config.branch || repository.default_branch || 'main';
+                const uploadedFiles = [];
+                for (const file of item.files) {
+                    uploadedFiles.push(await uploadGithubFile(item, file, token, repository, branch));
+                }
+                const uploaded = uploadedFiles.find(file => file.kind === 'edf') || uploadedFiles[0];
+                await updateSessionGithubUpload(item.sessionJsonPath, {
+                    status: 'uploaded', attempts: item.attempts, completedAt: nowIso(),
+                    repository: uploaded.repository, path: uploaded.path, branch: uploaded.branch,
+                    fileUrl: uploaded.fileUrl, commitUrl: uploaded.commitUrl, error: null,
+                    files: uploadedFiles,
+                    eventsExpected: item.eventsExpected,
+                    eventsMissing: item.eventsMissing,
+                });
+                state.queue = state.queue.filter(candidate => candidate !== item);
+                await persistGithubSyncState();
+                await emitGithubSyncStatus({ lastUploadedSessionId: item.sessionId });
+            } catch (error) {
+                item.status = 'failed';
+                item.error = String(error.message || error).slice(0, 300);
+                await persistGithubSyncState();
+                await updateSessionGithubUpload(item.sessionJsonPath, {
+                    status: 'failed', attempts: item.attempts, error: item.error,
+                    repository: item.config.repository, path: item.archivePath, branch: item.config.branch,
+                    files: item.files.map(file => ({ kind: file.kind, path: file.archivePath })),
+                    eventsExpected: item.eventsExpected, eventsMissing: item.eventsMissing,
+                }).catch(() => {});
+                await emitGithubSyncStatus({ lastError: item.error });
+            }
+        }
+        return publicGithubSyncState(state);
+    })().finally(() => { githubUploadProcessPromise = null; });
+    return githubUploadProcessPromise;
+}
+
+async function resolveGithubUploadFiles(session, { filePath, eventsPath, files = null } = {}, config) {
+    if (Array.isArray(files) && files.length) {
+        return files.map(normalizeGithubQueueFile).filter(file => file.localPath && file.archivePath);
+    }
+    const archivePaths = GithubSync.buildSessionArchivePaths(session, config);
+    const result = [{ kind: 'edf', localPath: filePath, archivePath: archivePaths.edf }];
+    const candidateEventsPath = eventsPath || (filePath ? path.join(path.dirname(filePath), 'events.jsonl') : '');
+    if (candidateEventsPath && isSessionPath(candidateEventsPath)) {
+        try {
+            const stat = await fsp.stat(candidateEventsPath);
+            if (stat.isFile() && stat.size > 0 && stat.size <= GithubSync.MAX_CONTENT_API_BYTES) {
+                result.push({ kind: 'events', localPath: candidateEventsPath, archivePath: archivePaths.events });
+            }
+        } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+        }
+    }
+    return result;
+}
+
+async function enqueueGithubUpload(session, { filePath, eventsPath, files = null, sessionJsonPath, reason = 'automatic', force = false } = {}) {
+    const state = await getGithubSyncState();
+    const config = GithubSync.normalizeGithubConfig(state.config);
+    if (!force && config.autoUploadStimulated !== true) {
+        return GithubSync.normalizeUploadStatus({ status: 'disabled', repository: config.repository });
+    }
+    if (!filePath || !sessionJsonPath || !isSessionPath(filePath) || !isSessionPath(sessionJsonPath)) {
+        throw new Error('EDF 或会话元数据路径不在受控目录中');
+    }
+    if (path.extname(filePath).toLowerCase() !== '.edf') {
+        throw new Error('GitHub 自动归档只接受已经封存的 EDF，旧版 CSV 不能伪装成 EDF 上传');
+    }
+    const uploadFiles = await resolveGithubUploadFiles(session, { filePath, eventsPath, files }, config);
+    if (!uploadFiles.some(file => file.kind === 'edf')) throw new Error('未找到可上传的 EDF 文件');
+    const archivePath = uploadFiles.find(file => file.kind === 'edf').archivePath;
+    const eventsExpected = Boolean(eventsPath || uploadFiles.some(file => file.kind === 'events'));
+    const eventsMissing = eventsExpected && !uploadFiles.some(file => file.kind === 'events');
+    const token = decryptGithubToken(state.tokenCiphertext);
+    const initialStatus = token ? 'queued' : 'not_configured';
+    let item = state.queue.find(candidate => candidate.sessionId === String(session.id));
+    if (!item) {
+        item = normalizeGithubQueueItem({
+            sessionId: session.id, sessionJsonPath, filePath, eventsPath,
+            files: uploadFiles,
+            session: { id: session.id, startedAt: session.startedAt },
+            config, archivePath, reason, status: initialStatus, queuedAt: nowIso(),
+            eventsExpected, eventsMissing,
+        });
+        state.queue.push(item);
+    } else {
+        item.status = initialStatus;
+        item.error = token ? null : '请先保存 GitHub 令牌并测试私有仓库连接';
+        item.filePath = filePath;
+        item.eventsPath = eventsPath || item.eventsPath;
+        item.files = uploadFiles;
+        item.sessionJsonPath = sessionJsonPath;
+        item.reason = reason;
+        item.config = config;
+        item.archivePath = archivePath;
+        item.eventsExpected = eventsExpected;
+        item.eventsMissing = eventsMissing;
+        item.queuedAt = item.queuedAt || nowIso();
+    }
+    if (!token) item.error = '请先保存 GitHub 令牌并测试私有仓库连接';
+    await persistGithubSyncState();
+    return GithubSync.normalizeUploadStatus({
+        status: initialStatus, repository: config.repository, path: archivePath,
+        files: uploadFiles.map(file => ({ kind: file.kind, path: file.archivePath })),
+        eventsExpected, eventsMissing, branch: config.branch, queuedAt: item.queuedAt,
+        attempts: item.attempts, error: item.error,
+    });
+}
+
+async function prepareAutomaticGithubUpload(finalSession, filePath, sessionJsonPath, hasStimulation, eventsPath) {
+    if (!hasStimulation) return GithubSync.normalizeUploadStatus({ status: 'not_applicable' });
+    try {
+        return await enqueueGithubUpload(finalSession, { filePath, eventsPath, sessionJsonPath });
+    } catch (error) {
+        return GithubSync.normalizeUploadStatus({ status: 'failed', error: error.message });
+    }
+}
+
+async function saveGithubSyncConfig(input = {}) {
+    const state = await getGithubSyncState();
+    const source = input.config || input;
+    const errors = GithubSync.validateGithubConfig(source);
+    if (errors.length) throw new Error(errors.join('；'));
+    const config = GithubSync.normalizeGithubConfig(source);
+    const token = typeof input.token === 'string' ? input.token.trim() : '';
+    if (input.clearToken === true) state.tokenCiphertext = null;
+    if (token) state.tokenCiphertext = encryptGithubToken(token);
+    state.config = config;
+    await persistGithubSyncState();
+    const result = await emitGithubSyncStatus();
+    if (token || state.tokenCiphertext) void processGithubUploadQueue();
+    return result;
+}
+
+async function testGithubSyncConnection() {
+    const state = await getGithubSyncState();
+    const token = decryptGithubToken(state.tokenCiphertext);
+    const repository = await githubRepositoryInfo(state.config, token);
+    return {
+        ...publicGithubSyncState(state),
+        repository: state.config.repository,
+        private: repository.private === true,
+        defaultBranch: repository.default_branch || state.config.branch,
+        permissions: repository.permissions ? {
+            push: repository.permissions.push === true,
+            maintain: repository.permissions.maintain === true,
+        } : null,
+        message: 'GitHub 私有仓库连接正常，可自动归档 EDF',
+    };
+}
+
+async function retryGithubUploads() {
+    const state = await getGithubSyncState();
+    for (const item of state.queue) {
+        if (item.status === 'failed' || item.status === 'not_configured') {
+            item.status = 'queued';
+            item.error = null;
+        }
+    }
+    await persistGithubSyncState();
+    return processGithubUploadQueue();
+}
+
+async function uploadSessionToGithub(sessionId) {
+    const sessions = await listSessions();
+    const selected = sessions.find(item => item.id === sessionId);
+    if (!selected) throw new Error('未找到指定采集会话');
+    const directory = path.resolve(selected.directory);
+    const filePath = path.resolve(path.join(directory, selected.dataFile || 'eeg_raw.edf'));
+    const sessionJsonPath = path.join(directory, 'session.json');
+    const eventsPath = path.join(directory, 'events.jsonl');
+    if (!isSessionPath(filePath) || !isSessionPath(sessionJsonPath) || !isSessionPath(eventsPath)) throw new Error('会话路径不在受控记录目录中');
+    const status = await enqueueGithubUpload(selected, { filePath, eventsPath, sessionJsonPath, reason: 'manual', force: true });
+    await updateSessionGithubUpload(sessionJsonPath, status);
+    if (status.status === 'queued') void processGithubUploadQueue();
+    return status;
 }
 
 function emitBluetoothCandidates() {
@@ -400,6 +866,8 @@ async function startRecording(metadata) {
         eventsPath: path.join(directory, 'events.jsonl'),
         appendPromise: Promise.resolve(),
         rows: 0,
+        hadStimulation: false,
+        stimulationCount: 0,
     };
     activeRecordings.set(id, recording);
     await fsp.appendFile(recording.eventsPath, `${JSON.stringify({ ts: nowIso(), level: 'info', action: 'session_started', sessionId: id })}\n`, 'utf8');
@@ -420,6 +888,10 @@ async function appendRecordingEvent(id, event) {
     const recording = activeRecordings.get(id);
     if (!recording) return appendEventLog(event);
     const record = { ts: nowIso(), sessionId: id, ...event };
+    if (record.action === 'light_started') {
+        recording.hadStimulation = true;
+        recording.stimulationCount += 1;
+    }
     await fsp.appendFile(recording.eventsPath, `${JSON.stringify(record)}\n`, 'utf8');
     return record;
 }
@@ -439,10 +911,17 @@ async function stopRecording(id, status = 'completed', reason = null) {
         rows: edf.receivedSamples,
         edfRecords: edf.records,
         edfPaddedSamples: edf.paddedSamples,
+        hasStimulation: recording.hadStimulation,
+        stimulationCount: recording.stimulationCount,
     };
     await fsp.appendFile(recording.eventsPath, `${JSON.stringify({ ts: endedAt, level: 'info', action: 'session_stopped', status, reason, rows: edf.receivedSamples })}\n`, 'utf8');
     await fsp.rename(recording.edfPartial, recording.edfFinal);
-    await writeJsonAtomic(path.join(recording.session.directory, 'session.json'), finalSession);
+    const sessionJsonPath = path.join(recording.session.directory, 'session.json');
+    finalSession.githubUpload = await prepareAutomaticGithubUpload(
+        finalSession, recording.edfFinal, sessionJsonPath, recording.hadStimulation, recording.eventsPath,
+    );
+    await writeJsonAtomic(sessionJsonPath, finalSession);
+    if (finalSession.githubUpload.status === 'queued') void processGithubUploadQueue();
     return { ...finalSession, edfPath: recording.edfFinal };
 }
 
@@ -457,6 +936,106 @@ async function listSessions() {
         if (metadata) sessions.push({ ...metadata, directory });
     }
     return sessions.sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
+}
+
+function githubUploadHasFile(upload, kind, archivePath) {
+    if (!upload || upload.status !== 'uploaded') return false;
+    if (kind === 'edf' && upload.path === archivePath) return true;
+    return Array.isArray(upload.files) && upload.files.some(file => (
+        (file.kind === kind || (kind === 'edf' && !file.kind)) && file.path === archivePath
+    ));
+}
+
+async function buildGithubHistoryCandidate(session, config, today = localDateKey()) {
+    if (!session?.id || session.status === 'recording') return null;
+    const started = new Date(session.startedAt || '');
+    if (!Number.isFinite(started.getTime())) return null;
+    const date = localDateKey(started);
+    if (date >= today) return null;
+    const directory = path.resolve(String(session.directory || ''));
+    const sessionJsonPath = path.join(directory, 'session.json');
+    const filePath = path.resolve(path.join(directory, session.dataFile || 'eeg_raw.edf'));
+    const eventsPath = path.join(directory, 'events.jsonl');
+    if (!isSessionPath(directory) || !isSessionPath(sessionJsonPath) || !isSessionPath(filePath) || !isSessionPath(eventsPath)) return null;
+    let edfStat;
+    try {
+        edfStat = await fsp.stat(filePath);
+    } catch (error) {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+    }
+    if (!edfStat.isFile() || edfStat.size <= 0) return null;
+    let eventsStat = null;
+    try {
+        eventsStat = await fsp.stat(eventsPath);
+        if (!eventsStat.isFile() || eventsStat.size > GithubSync.MAX_CONTENT_API_BYTES) eventsStat = null;
+    } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+    }
+    const archivePaths = GithubSync.buildSessionArchivePaths(session, config);
+    const hasEvents = Boolean(eventsStat && eventsStat.size > 0);
+    const upload = GithubSync.normalizeUploadStatus(session.githubUpload || {});
+    const alreadyUploaded = githubUploadHasFile(upload, 'edf', archivePaths.edf)
+        && (!hasEvents || githubUploadHasFile(upload, 'events', archivePaths.events));
+    return {
+        id: session.id,
+        startedAt: session.startedAt || null,
+        endedAt: session.endedAt || null,
+        date,
+        status: session.status || 'unknown',
+        rows: Number(session.rows || 0),
+        edfBytes: edfStat.size,
+        eventsBytes: eventsStat ? eventsStat.size : null,
+        hasEvents,
+        alreadyUploaded,
+        archivePaths,
+    };
+}
+
+async function getGithubHistoryCandidates() {
+    const state = await getGithubSyncState();
+    const sessions = await listSessions();
+    const today = localDateKey();
+    const candidates = [];
+    for (const session of sessions) {
+        const candidate = await buildGithubHistoryCandidate(session, state.config, today);
+        if (candidate) candidates.push(candidate);
+    }
+    return candidates.sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
+}
+
+async function uploadGithubHistory(input = {}) {
+    const request = input && typeof input === 'object' ? input : {};
+    const candidates = await getGithubHistoryCandidates();
+    const requestedIds = Array.isArray(request.sessionIds)
+        ? new Set(request.sessionIds.map(value => String(value)))
+        : null;
+    const selected = requestedIds
+        ? candidates.filter(candidate => requestedIds.has(String(candidate.id)))
+        : candidates.filter(candidate => !candidate.alreadyUploaded);
+    const sessions = await listSessions();
+    const statuses = [];
+    for (const candidate of selected) {
+        const session = sessions.find(item => item.id === candidate.id);
+        if (!session) continue;
+        const directory = path.resolve(session.directory);
+        const filePath = path.resolve(path.join(directory, session.dataFile || 'eeg_raw.edf'));
+        const eventsPath = path.join(directory, 'events.jsonl');
+        const sessionJsonPath = path.join(directory, 'session.json');
+        const status = await enqueueGithubUpload(session, {
+            filePath, eventsPath, sessionJsonPath, reason: 'manual', force: true,
+        });
+        await updateSessionGithubUpload(sessionJsonPath, status);
+        statuses.push({ sessionId: session.id, status });
+    }
+    if (statuses.some(item => item.status.status === 'queued')) void processGithubUploadQueue();
+    const state = await getGithubSyncState();
+    return {
+        ...publicGithubSyncState(state),
+        selectedCount: statuses.length,
+        statuses,
+        candidates: await getGithubHistoryCandidates(),
+    };
 }
 
 async function readSessionStagingHistory(sessionId) {
@@ -797,6 +1376,13 @@ function registerIpc() {
     ipcMain.handle('sleep:model-info', () => sleepRequest('info'));
     ipcMain.handle('sleep:infer', (_event, payload) => sleepRequest('infer', payload));
     ipcMain.handle('app:event', (_event, record) => appendEventLog(record));
+    ipcMain.handle('github-sync:get-config', async () => publicGithubSyncState(await getGithubSyncState()));
+    ipcMain.handle('github-sync:save-config', (_event, input) => saveGithubSyncConfig(input));
+    ipcMain.handle('github-sync:test', () => testGithubSyncConnection());
+    ipcMain.handle('github-sync:history-candidates', () => getGithubHistoryCandidates());
+    ipcMain.handle('github-sync:upload-history', (_event, input) => uploadGithubHistory(input));
+    ipcMain.handle('github-sync:retry', () => retryGithubUploads());
+    ipcMain.handle('github-sync:upload-session', (_event, sessionId) => uploadSessionToGithub(sessionId));
     ipcMain.handle('path:reveal', async (_event, targetPath) => {
         if (!targetPath) return false;
         shell.showItemInFolder(targetPath);
@@ -829,6 +1415,9 @@ app.whenReady().then(async () => {
     session.defaultSession.setDevicePermissionHandler(details => details.deviceType === 'bluetooth');
     configureApplicationMenu();
     registerIpc();
+    void getGithubSyncState().then(() => processGithubUploadQueue()).catch(error => {
+        console.error(`GitHub EDF 同步队列初始化失败：${error.message}`);
+    });
     if (debugCliMode) createDebugWindow(); else createWindow();
     app.on('activate', () => {
         const windows = [mainWindow, analysisWindow].filter(window => window && !window.isDestroyed());

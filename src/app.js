@@ -49,6 +49,7 @@
         lightStateError: null,
         plans: [],
         sessions: [],
+        githubSync: null,
         activeSession: null,
         sessionStartedAt: 0,
         edfQueue: [],
@@ -1747,17 +1748,71 @@
         await audit('plan_saved', { planId: plan.id, name: plan.name });
     }
 
+    function githubUploadPresentation(session) {
+        const upload = session?.githubUpload;
+        const status = String(upload?.status || 'not_uploaded');
+        const labels = {
+            not_uploaded: ['未上传', 'off'],
+            not_applicable: ['无刺激', 'off'],
+            not_configured: ['待配置', 'off'],
+            disabled: ['自动关闭', 'off'],
+            queued: ['排队中', 'pending'],
+            uploading: ['上传中', 'pending'],
+            uploaded: ['已上传', 'success'],
+            failed: ['失败', 'error'],
+        };
+        const [label, tone] = labels[status] || [status, 'off'];
+        const fileKinds = Array.isArray(upload?.files) ? upload.files.map(file => file.kind === 'events' ? 'events' : 'EDF') : [];
+        const detail = [upload?.repository, upload?.path, fileKinds.length ? fileKinds.join('+') : null, upload?.error].filter(Boolean).join(' · ');
+        return { label, tone, detail };
+    }
+
+    function renderGithubSync() {
+        const panel = $('github-sync-panel');
+        if (!panel) return;
+        const sync = state.githubSync || {};
+        const config = sync.config || {};
+        const repository = $('github-repository');
+        const branch = $('github-branch');
+        const directory = $('github-directory');
+        const autoUpload = $('github-auto-upload');
+        if (repository && document.activeElement !== repository) repository.value = config.repository || 'Jaycob-jh/EEG_tls_Upper';
+        if (branch && document.activeElement !== branch) branch.value = config.branch || 'main';
+        if (directory && document.activeElement !== directory) directory.value = config.directory || 'data/edf';
+        if (autoUpload) autoUpload.checked = config.autoUploadStimulated !== false;
+        const status = $('github-sync-status');
+        if (status) {
+            if (sync.tokenStored && !sync.encryptionAvailable) status.textContent = '安全存储不可用';
+            else if (sync.tokenStored) status.textContent = '已配置令牌';
+            else status.textContent = '未配置';
+        }
+        const queue = (sync.queue || []).filter(item => item.status !== 'uploaded');
+        const queueNode = $('github-sync-queue');
+        if (queueNode) {
+            if (!queue.length) queueNode.textContent = sync.tokenStored
+                ? '暂无待上传记录；历史记录不会在启动时自动上传。'
+                : '尚未配置令牌；保存并测试私有仓库后才会启用自动归档。';
+            else queueNode.textContent = `待处理 ${queue.length} 条记录：${queue.map(item => `${item.sessionId}（${item.status}${Array.isArray(item.files) && item.files.some(file => file.kind === 'events') ? '，EDF+events' : '，EDF'}）`).join('、')}`;
+        }
+    }
+
+    async function loadGithubSync() {
+        state.githubSync = await window.desktopAPI.getGithubSyncConfig();
+        renderGithubSync();
+    }
+
     async function loadSessions() {
         state.sessions = await window.desktopAPI.listSessions();
         const body = $('record-list');
         if (!state.sessions.length) {
-            body.innerHTML = '<tr><td colspan="8"><div class="empty-state">暂无采集记录</div></td></tr>';
+            body.innerHTML = '<tr><td colspan="9"><div class="empty-state">暂无采集记录</div></td></tr>';
             return;
         }
         body.innerHTML = state.sessions.map(session => `<tr>
             <td>${escapeHtml(formatDateTime(session.startedAt))}</td><td>CH${session.selectedChannel}</td><td>${escapeHtml(session.planName || '手动采集')}</td>
             <td>${Number(session.rows || 0).toLocaleString()}</td><td title="${recordingSampleRate(session)} Hz 有效数据">${Core.formatDuration(sessionDurationSeconds(session))}</td><td>${session.storageFormat === 'EDF' ? 'EDF' : 'CSV（旧版）'}</td><td><span class="state-badge ${session.status === 'completed' ? '' : 'off'}">${escapeHtml(session.status)}</span></td>
-            <td><button class="button text analyze-session" data-session-id="${escapeHtml(session.id)}">分析</button><button class="button text reveal-session" data-directory="${escapeHtml(session.directory)}">打开目录</button></td>
+            ${(() => { const upload = githubUploadPresentation(session); return `<td><span class="github-upload-badge ${upload.tone}" title="${escapeHtml(upload.detail)}">${escapeHtml(upload.label)}</span></td>`; })()}
+            <td><button class="button text analyze-session" data-session-id="${escapeHtml(session.id)}">分析</button><button class="button text upload-session-github" data-session-id="${escapeHtml(session.id)}">上传 EDF+events</button><button class="button text reveal-session" data-directory="${escapeHtml(session.directory)}">打开目录</button></td>
         </tr>`).join('');
     }
 
@@ -1905,11 +1960,70 @@
             }
         }));
         $('refresh-records-button').addEventListener('click', () => runUiTask(loadSessions));
+        $('github-save-button').addEventListener('click', () => runUiTask(async () => {
+            const result = await window.desktopAPI.saveGithubSyncConfig({
+                config: {
+                    repository: $('github-repository').value,
+                    branch: $('github-branch').value,
+                    directory: $('github-directory').value,
+                    autoUploadStimulated: $('github-auto-upload').checked,
+                },
+                token: $('github-token').value,
+            });
+            state.githubSync = result;
+            $('github-token').value = '';
+            renderGithubSync();
+            toast(result.tokenStored ? 'GitHub 设置已保存；请测试私有仓库连接' : 'GitHub 设置已保存，但尚未配置令牌', result.tokenStored ? 'info' : 'error');
+        }));
+        $('github-test-button').addEventListener('click', () => runUiTask(async () => {
+            const result = await window.desktopAPI.testGithubSync();
+            state.githubSync = result;
+            renderGithubSync();
+            toast(result.message || 'GitHub 连接正常');
+        }));
+        $('github-history-button').addEventListener('click', () => runUiTask(async () => {
+            const candidates = await window.desktopAPI.getGithubHistoryCandidates();
+            const pending = candidates.filter(candidate => !candidate.alreadyUploaded);
+            if (!pending.length) {
+                toast(candidates.length ? '前几天的 EDF 已经同步，或没有可上传的历史 EDF' : '没有找到今天以前的已完成 EDF', 'info');
+                return;
+            }
+            const dates = [...new Set(pending.map(candidate => candidate.date))].join('、');
+            const eventsCount = pending.filter(candidate => candidate.hasEvents).length;
+            const confirmed = window.confirm(`将同步 ${pending.length} 条今天以前的 EEG 记录（${dates}）。其中 ${eventsCount} 条包含可用 events，将与 EDF 一并上传。原始 EEG 只会进入私有 GitHub 仓库，是否继续？`);
+            if (!confirmed) return;
+            const result = await window.desktopAPI.uploadGithubHistory({ sessionIds: pending.map(candidate => candidate.id) });
+            state.githubSync = result;
+            renderGithubSync();
+            await loadSessions();
+            const notConfigured = (result.statuses || []).filter(item => item.status?.status === 'not_configured').length;
+            toast(notConfigured ? `已登记 ${result.selectedCount} 条记录，但请先配置 GitHub 令牌` : `已将 ${result.selectedCount} 条历史记录加入上传队列` , notConfigured ? 'error' : 'info');
+        }));
+        $('github-retry-button').addEventListener('click', () => runUiTask(async () => {
+            state.githubSync = await window.desktopAPI.retryGithubUploads();
+            renderGithubSync();
+            await loadSessions();
+            toast('已重试待上传 EDF 和 events');
+        }));
+        window.desktopAPI.onGithubSyncStatus(status => {
+            state.githubSync = status;
+            renderGithubSync();
+            void loadSessions();
+        });
         $('record-list').addEventListener('click', event => {
             const analyze = event.target.closest('.analyze-session');
             if (analyze) {
                 window.desktopAPI.openAnalysisWindow(analyze.dataset.sessionId)
                     .catch(error => toast(error.message, 'error'));
+                return;
+            }
+            const upload = event.target.closest('.upload-session-github');
+            if (upload) {
+                void runUiTask(async () => {
+                    await window.desktopAPI.uploadSessionToGithub(upload.dataset.sessionId);
+                    await loadSessions();
+                    toast('EDF 和 events 已加入 GitHub 上传队列');
+                });
                 return;
             }
             const button = event.target.closest('.reveal-session');
@@ -2129,7 +2243,7 @@
         updateEegUi();
         await setupRealtimeSleep();
         startWaveformLoop();
-        await Promise.all([loadPlans(), loadSessions()]);
+        await Promise.all([loadPlans(), loadSessions(), loadGithubSync()]);
         planEngine.start();
         state.relativePlanRefreshTimer = setInterval(() => { if (planEngine.getRelativeStatus()) renderNextAction(); }, 500);
         state.streamMetricsTimer = setInterval(() => {

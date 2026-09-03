@@ -26,6 +26,18 @@ contextBridge.exposeInMainWorld('desktopAPI', {
     closeAnalysis: analysisId => ipcRenderer.invoke('analysis:close', analysisId),
     getSleepModelInfo: () => ipcRenderer.invoke('sleep:model-info'),
     inferSleepStage: payload => ipcRenderer.invoke('sleep:infer', payload),
+    getGithubSyncConfig: () => ipcRenderer.invoke('github-sync:get-config'),
+    saveGithubSyncConfig: input => ipcRenderer.invoke('github-sync:save-config', input),
+    testGithubSync: () => ipcRenderer.invoke('github-sync:test'),
+    getGithubHistoryCandidates: () => ipcRenderer.invoke('github-sync:history-candidates'),
+    uploadGithubHistory: input => ipcRenderer.invoke('github-sync:upload-history', input),
+    retryGithubUploads: () => ipcRenderer.invoke('github-sync:retry'),
+    uploadSessionToGithub: sessionId => ipcRenderer.invoke('github-sync:upload-session', sessionId),
+    onGithubSyncStatus: callback => {
+        const listener = (_event, status) => callback(status);
+        ipcRenderer.on('github-sync:status', listener);
+        return () => ipcRenderer.removeListener('github-sync:status', listener);
+    },
     onAnalysisProgress: callback => {
         const listener = (_event, progress) => callback(progress);
         ipcRenderer.on('analysis:progress', listener);

@@ -274,6 +274,20 @@ body.analysis-window-body { background: var(--bg); }
 .record-table th, .record-table td { text-align: left; padding: 12px 15px; border-bottom: 1px solid var(--border); font-size: 12px; }
 .record-table th { background: var(--surface-soft); color: var(--muted); font-size: 10px; text-transform: uppercase; }
 .record-table tr:last-child td { border-bottom: 0; }
+.github-sync-panel { margin-bottom: 16px; background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow); }
+.github-sync-note { margin: 14px 15px 0; }
+.github-sync-form { display: grid; grid-template-columns: 1.5fr .75fr 1fr 1.35fr; gap: 12px; padding: 0 15px 14px; align-items: end; }
+.github-sync-form label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; }
+.github-sync-form input[type="password"] { letter-spacing: .04em; }
+.github-auto-toggle { display: flex !important; align-items: center; flex-direction: row; gap: 7px !important; }
+.github-auto-toggle input { min-height: auto; }
+.github-sync-actions { grid-column: 2 / -1; justify-content: flex-end; }
+.github-sync-queue { display: block; padding: 0 15px 14px; color: var(--muted); font-size: 11px; }
+.github-sync-state { color: var(--muted); font-size: 11px; }
+.github-upload-badge { display: inline-flex; padding: 4px 8px; border-radius: 999px; background: var(--surface-strong); color: var(--muted); font-size: 10px; font-weight: 750; white-space: nowrap; }
+.github-upload-badge.success { background: var(--green-soft); color: #08765f; }
+.github-upload-badge.pending { background: var(--blue-soft); color: var(--blue); }
+.github-upload-badge.error { background: var(--red-soft); color: var(--red); }
 
 .debug-grid { display: grid; grid-template-columns: 1.25fr .75fr; gap: 16px; }
 .debug-section { padding-bottom: 16px; }
@@ -332,6 +346,8 @@ body.analysis-window-body { background: var(--bg); }
     .run-panel { display: grid; grid-template-columns: 1fr 1fr; }
     .run-panel > .section-heading, .activity-list { grid-column: 1 / -1; }
     .wave-canvas-wrap { height: clamp(300px, 42vh, 480px); }
+    .github-sync-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .github-sync-actions { grid-column: 1 / -1; }
 }
 
 @media (max-width: 900px) {
@@ -346,4 +362,6 @@ body.analysis-window-body { background: var(--bg); }
     .analysis-window-content .analysis-heading { align-items: flex-start; }
     .analysis-window-content .analysis-actions { width: 100%; justify-content: flex-start; }
     .analysis-window-content .analysis-actions select { min-width: 0; flex: 1 1 180px; }
+    .github-sync-form { grid-template-columns: 1fr; }
+    .github-sync-actions { grid-column: auto; justify-content: flex-start; flex-wrap: wrap; }
 }

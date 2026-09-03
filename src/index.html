@@ -175,9 +175,25 @@
                     <div><p class="eyebrow">RAW DATA ARCHIVE</p><h2>采集记录</h2><small class="page-heading-note">点击记录后的“分析”将在独立窗口打开，主界面仍可继续操作</small></div>
                     <button class="button secondary" id="refresh-records-button">刷新</button>
                 </div>
+                <section class="github-sync-panel" id="github-sync-panel">
+                    <div class="section-heading compact">
+                        <div><p class="eyebrow">GITHUB EDF ARCHIVE</p><h3>GitHub EDF 数据存档</h3></div>
+                        <span class="github-sync-state" id="github-sync-status">未配置</span>
+                    </div>
+                    <div class="notice github-sync-note">默认只在一次 EEG 记录停止、EDF 完整封存且实际发生过光刺激后上传 EDF，并同时上传同一记录的 events.jsonl；同一记录内多次刺激合并为一个 EDF。点击“同步前几天数据”可选择今天以前的已完成 EDF，已有 events 会一并上传。仅允许私有仓库，令牌使用 macOS 钥匙串加密保存，不写入仓库。</div>
+                    <div class="github-sync-form">
+                        <label>GitHub 仓库<input id="github-repository" type="text" value="Jaycob-jh/EEG_tls_Upper" placeholder="owner/repository" autocomplete="off"></label>
+                        <label>分支<input id="github-branch" type="text" value="main" autocomplete="off"></label>
+                        <label>EDF 目录<input id="github-directory" type="text" value="data/edf" autocomplete="off"></label>
+                        <label>Personal Access Token<input id="github-token" type="password" placeholder="仅本次保存时读取" autocomplete="new-password"></label>
+                        <label class="github-auto-toggle"><input id="github-auto-upload" type="checkbox" checked> 刺激完成后自动上传 EDF+events</label>
+                        <div class="button-row github-sync-actions"><button class="button primary" id="github-save-button" type="button">保存设置</button><button class="button secondary" id="github-test-button" type="button">测试私有仓库</button><button class="button secondary" id="github-history-button" type="button">同步前几天数据</button><button class="button secondary" id="github-retry-button" type="button">重试待上传</button></div>
+                    </div>
+                    <small class="github-sync-queue" id="github-sync-queue">未配置同步队列</small>
+                </section>
                 <div class="record-table-wrap">
                     <table class="record-table">
-                        <thead><tr><th>开始时间</th><th>通道</th><th>方案</th><th>样本</th><th>时长</th><th>文件</th><th>状态</th><th>操作</th></tr></thead>
+                        <thead><tr><th>开始时间</th><th>通道</th><th>方案</th><th>样本</th><th>时长</th><th>文件</th><th>状态</th><th>GitHub</th><th>操作</th></tr></thead>
                         <tbody id="record-list"></tbody>
                     </table>
                 </div>
