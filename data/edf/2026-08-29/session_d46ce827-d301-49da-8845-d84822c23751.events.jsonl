@@ -1,0 +1,4 @@
+{"ts":"2026-08-29T21:50:39.062+08:00","level":"info","action":"session_started","sessionId":"session_d46ce827-d301-49da-8845-d84822c23751"}
+{"ts":"2026-08-29T21:50:39.115+08:00","sessionId":"session_d46ce827-d301-49da-8845-d84822c23751","level":"info","action":"eeg_started","channel":2}
+{"ts":"2026-08-29T21:51:01.859+08:00","sessionId":"session_d46ce827-d301-49da-8845-d84822c23751","level":"info","action":"status_received","batteryLevel":99,"charging":false,"eegRunning":true,"light1Running":false,"light2Running":false,"lastError":0,"systemStatus":66,"portStatus":16,"chargingDone":false,"uptimeMs":5553345}
+{"ts":"2026-08-29T21:54:53.599+08:00","level":"info","action":"session_stopped","status":"interrupted","reason":"application_exit","rows":62976}
