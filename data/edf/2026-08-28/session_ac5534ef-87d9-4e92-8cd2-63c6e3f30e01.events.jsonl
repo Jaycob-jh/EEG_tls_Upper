@@ -1,0 +1,4 @@
+{"ts":"2026-08-28T08:34:40.772+08:00","level":"info","action":"session_started","sessionId":"session_ac5534ef-87d9-4e92-8cd2-63c6e3f30e01"}
+{"ts":"2026-08-28T08:34:40.861+08:00","sessionId":"session_ac5534ef-87d9-4e92-8cd2-63c6e3f30e01","level":"info","action":"eeg_started","channel":2}
+{"ts":"2026-08-28T08:34:46.684+08:00","sessionId":"session_ac5534ef-87d9-4e92-8cd2-63c6e3f30e01","level":"info","action":"eeg_stopped","reason":"manual"}
+{"ts":"2026-08-28T08:34:46.691+08:00","level":"info","action":"session_stopped","status":"completed","reason":"manual","rows":1375}
