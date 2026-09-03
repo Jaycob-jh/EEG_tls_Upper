@@ -1,0 +1,2 @@
+{"ts":"2026-08-30T10:54:02.843+08:00","level":"info","action":"session_started","sessionId":"session_89cc73d0-9370-43c0-9a3b-40b8f3fd7a91"}
+{"ts":"2026-08-30T10:54:02.896+08:00","level":"info","action":"session_stopped","status":"failed","reason":"Device error 0x04: Wrong state","rows":0}
