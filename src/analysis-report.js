@@ -114,7 +114,7 @@ function buildReportHtml(data) {
         <h2 class="page-break">4. 原始与滤波波形</h2><h3>原始波形</h3><div class="chart" data-chart="raw">${svgEnvelope(data.charts.comparison.raw,{startLabel:`${number(data.charts.comparison.startSec,1)} s`,endLabel:`${number(data.charts.comparison.startSec+10,1)} s`})}</div><h3>零相位 0.5–45Hz + 50Hz 陷波</h3><div class="chart" data-chart="filtered">${svgEnvelope(data.charts.comparison.filtered,{startLabel:`${number(data.charts.comparison.startSec,1)} s`,endLabel:`${number(data.charts.comparison.startSec+10,1)} s`})}</div>
         <h2>5. 光刺激前、中、后对比</h2>${data.phaseMetrics?.length?`<div class="chart" data-chart="spectrum">${svgSpectrum(firstPhases)}</div><div class="chart" data-chart="bands">${svgBands(firstPhases)}</div><table><thead><tr><th>序号</th><th>通道</th><th>刺激区间</th><th>前/中/后 RMS (µV)</th><th>39–41Hz 中期变化</th></tr></thead><tbody>${phaseRows}</tbody></table>`:'<div class="notice">该会话没有完整的光刺激开始/停止事件，未生成阶段对比。</div>'}
         <h2>6. 结论边界</h2><p>分析使用一条双极 EEG 导联（两枚互为参考电极）。频带变化可能同时受到生理响应、刺激电路耦合、运动伪迹和时间进程影响，不能单独解释为临床疗效或自然睡眠阶段变化。</p>
-        <div class="footer">曹操 v0.3.1 · 原始数据文件：${escapeHtml(data.metadata?.directory||'会话目录')}</div>
+        <div class="footer">曹操 v0.4.0 · 原始数据文件：${escapeHtml(data.metadata?.directory||'会话目录')}</div>
     </body></html>`;
 }
 

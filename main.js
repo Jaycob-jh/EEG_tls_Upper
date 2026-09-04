@@ -346,7 +346,7 @@ function githubApiRequest(pathname, { method = 'GET', token = '', body = null } 
             callback(value);
         };
         request.setHeader('Accept', 'application/vnd.github+json');
-        request.setHeader('User-Agent', 'CaoCao-EEG-Desktop/0.3.1');
+        request.setHeader('User-Agent', 'CaoCao-EEG-Desktop/0.4.0');
         request.setHeader('X-GitHub-Api-Version', '2022-11-28');
         if (token) request.setHeader('Authorization', `Bearer ${token}`);
         if (body !== null) request.setHeader('Content-Type', 'application/json');

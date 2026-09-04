@@ -254,12 +254,12 @@
     }
 
     function onlineStagingModeLabel(mode) {
-        return mode === 'causal' ? '当前因果' : mode === 'center' ? '中心回顾' : `未知（${mode || '--'}）`;
+        return mode === 'causal' ? '当前因果候选' : mode === 'center' ? '中心回顾（仅复核）' : `未知（${mode || '--'}）`;
     }
 
     function onlineStagingLightLabel(record) {
         if (record.stimulusShadow) return '验证命中（未发光）';
-        if (record.inferenceMode === 'center') return '目标 epoch 未绑定';
+        if (record.inferenceMode === 'center') return '中心回顾，不触发';
         return record.lightChannels?.length
             ? `${record.lightChannels.map(channel => `CH${channel}`).join('、')} 开启`
             : '关闭';
@@ -354,7 +354,7 @@
         if (!stateLabel || !summaryNode || !body) return;
         if (state.onlineStagingLoading) {
             stateLabel.textContent = '读取中…';
-            summaryNode.textContent = '正在读取该采集记录的 events.jsonl；不会修改原始 EEG 数据。';
+            summaryNode.textContent = '正在读取该采集记录的 events.jsonl；不会修改原始 EEG 数据，也不会触发光刺激。';
             body.innerHTML = '<tr><td colspan="13"><div class="empty-state">正在读取在线分期记录…</div></td></tr>';
             return;
         }
@@ -395,7 +395,7 @@
             ['在线输出', records.length.toLocaleString(), 'events.jsonl 已保存'],
             ['覆盖 epoch', Number(summary.epochCount || 0).toLocaleString(), epochRange],
             ['当前因果', causalCount.toLocaleString(), `用于实时候选 · ${modeDelayLabel('causal')}`],
-            ['中心回顾', centerCount.toLocaleString(), `回顾性输出 · ${modeDelayLabel('center')}${otherCount ? ` · 其他模式 ${otherCount} 条` : ''}`],
+            ['中心回顾', centerCount.toLocaleString(), `仅复核，不触发 · ${modeDelayLabel('center')}${otherCount ? ` · 其他模式 ${otherCount} 条` : ''}`],
         ].map(item => `<article class="analysis-yasa-stat"><span>${item[0]}</span><strong>${item[1]}</strong><small>${item[2]}</small></article>`).join('');
         body.innerHTML = records.map(record => {
             const modeClass = record.inferenceMode === 'center' ? 'mode-center' : record.inferenceMode === 'causal' ? 'mode-causal' : '';
@@ -450,8 +450,8 @@
         if (!state.yasa) {
             stateLabel.textContent = state.yasaRunning ? '运行中…' : '尚未运行';
             summaryNode.textContent = state.yasaRunning
-                ? '正在调用 Python YASA；原始 EDF 保持不变。'
-                : '选择采集记录后，点击右上角“YASA 离线复核”运行独立分期。';
+                ? '正在调用 Python YASA；原始 EDF 保持不变，结果仅用于复核。'
+                : '选择采集记录后，点击右上角“YASA 离线复核”运行独立分期；YASA 不参与实时光刺激。';
             body.innerHTML = '<tr><td colspan="4"><div class="empty-state">尚未生成 YASA 结果</div></td></tr>';
             warningsNode.hidden = true;
             warningsNode.textContent = '';
@@ -469,7 +469,7 @@
             ['有效 epoch', Number(result.epochCount || 0).toLocaleString(), '每个 epoch 30 秒'],
             ['记录时长', duration(result.durationSeconds), `${number(result.sampleRateHz)} Hz`],
             ['与实时结果一致率', overlapText, '仅作描述性对照'],
-            ['输出文件', '2 个', 'summary.json + epochs.csv'],
+            ['输出文件', '2 个', 'summary.json + epochs.csv · 仅复核'],
         ].map(item => `<article class="analysis-yasa-stat"><span>${item[0]}</span><strong>${item[1]}</strong><small>${item[2]}</small></article>`).join('');
         const labels = { W: 'Wake', N1: 'N1', N2: 'N2', N3: 'N3', REM: 'REM' };
         body.innerHTML = Object.keys(labels).map(stage => `<tr>

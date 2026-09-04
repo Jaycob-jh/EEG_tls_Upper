@@ -156,7 +156,7 @@ test('diagnostic causal pipeline classifies the latest epoch after the first win
 test('sleep-stage stimulus protocol validates safety limits', () => {
     assert.deepEqual(Sleep.validateStimulusProtocol({
         enabled: true,
-        targetStages: [],
+        targetStages: ['N3'],
         minN3Probability: 1.1,
         minConfidence: 1.1,
         consecutiveEpochs: 0,
@@ -166,16 +166,51 @@ test('sleep-stage stimulus protocol validates safety limits', () => {
         durationSeconds: 0,
         cooldownMinutes: 0,
     }), [
-        '至少选择一个目标睡眠分期',
-        'N3 概率阈值必须为 50%~100%',
-        '置信度阈值必须为 50%~100%',
+        'N3 候选概率阈值必须为 50%~100%',
         '连续命中次数必须为 1~10',
         '光刺激通道必须为 1 或 2',
         '光刺激频率必须为 1~100Hz',
         '光刺激功率必须为 0~100%',
-        '单次刺激时长必须为 1~3600 秒',
-        '冷却时间必须为 1~1440 分钟',
+        '刺激时长必须为 1~3600 秒',
+        '两次自动触发最短间隔必须为 1~1440 分钟',
     ]);
+});
+
+test('sleep-stage stimulus protocol validates only thresholds used by the selected targets', () => {
+    const nonN3 = Sleep.validateStimulusProtocol({
+        targetStages: ['N2'],
+        minN3Probability: Number.NaN,
+        minConfidence: 0.8,
+        durationSeconds: 10,
+        cooldownMinutes: 1,
+    });
+    assert.deepEqual(nonN3, []);
+    assert.deepEqual(Sleep.validateStimulusProtocol({
+        targetStages: ['N2'],
+        minConfidence: Number.NaN,
+        durationSeconds: 10,
+        cooldownMinutes: 1,
+    }), ['其他分期置信度必须为 50%~100%']);
+
+    const confirmedN3 = Sleep.validateStimulusProtocol({
+        targetStages: ['N3'],
+        n3TriggerMode: 'confirmed',
+        minN3Probability: Number.NaN,
+        minConfidence: 0.8,
+        durationSeconds: 10,
+        cooldownMinutes: 1,
+    });
+    assert.deepEqual(confirmedN3, []);
+
+    const probabilityN3 = Sleep.validateStimulusProtocol({
+        targetStages: ['N3'],
+        n3TriggerMode: 'probability',
+        minN3Probability: 0.85,
+        minConfidence: Number.NaN,
+        durationSeconds: 10,
+        cooldownMinutes: 1,
+    });
+    assert.deepEqual(probabilityN3, []);
 });
 
 test('sleep-stage stimulus gate triggers only after consecutive valid target epochs', () => {
@@ -220,6 +255,30 @@ test('sleep-stage stimulus gate trusts an explicit conservative N3 postprocess r
     assert.equal(decision.stage, 'N3');
 });
 
+test('N3 conservative confidence and non-N3 confidence use separate thresholds', () => {
+    const n3Gate = new Sleep.SleepStageStimulusGate({
+        enabled: true, targetStages: ['N3'], n3TriggerMode: 'confirmed',
+        minN3Confidence: 0.9, minConfidence: 0.5, consecutiveEpochs: 1,
+    });
+    assert.equal(n3Gate.evaluate({
+        epochIndex: 1, stage: 'N3', confidence: 0.85, n3Postprocessed: true, quality: { ok: true },
+    }).reason, 'low_confidence');
+    assert.equal(n3Gate.evaluate({
+        epochIndex: 2, stage: 'N3', confidence: 0.91, n3Postprocessed: true, quality: { ok: true },
+    }).triggered, true);
+
+    const otherGate = new Sleep.SleepStageStimulusGate({
+        enabled: true, targetStages: ['N2'], n3TriggerMode: 'probability',
+        minN3Confidence: 0.99, minConfidence: 0.9, consecutiveEpochs: 1,
+    });
+    assert.equal(otherGate.evaluate({
+        epochIndex: 1, stage: 'N2', confidence: 0.85, quality: { ok: true },
+    }).reason, 'low_confidence');
+    assert.equal(otherGate.evaluate({
+        epochIndex: 2, stage: 'N2', confidence: 0.91, quality: { ok: true },
+    }).triggered, true);
+});
+
 test('sleep-stage stimulus gate rejects duplicate results, active stimulation and cooldown', () => {
     const gate = new Sleep.SleepStageStimulusGate({
         enabled: true,
@@ -247,6 +306,7 @@ test('sleep-stage stimulus protocol normalizes defaults and rejects invalid upda
         targetStages: ['N3'],
         n3TriggerMode: 'probability',
         minN3Probability: 0.85,
+        minN3Confidence: 0.8,
         minConfidence: 0.8,
         consecutiveEpochs: 2,
         lightChannel: 1,

@@ -173,9 +173,15 @@ test('new plan defaults and persisted stimulus protocol do not auto-enable light
     assert.match(source, /const protocol = \{ \.\.\.Sleep\.normalizeStimulusProtocol\(stored\), enabled: false \}/);
 });
 
-test('stimulus control mode keeps manual and model triggers explicitly selectable', () => {
+test('stimulus sources stay independent while legacy source helpers remain compatible', () => {
     assert.equal(Core.normalizeStimulusControlMode('manual'), 'manual');
     assert.equal(Core.normalizeStimulusControlMode('invalid'), 'manual');
+    assert.equal(Core.stimulusControlModePresentation('manual').manualVisible, true);
+    assert.equal(Core.stimulusControlModePresentation('manual').modelVisible, false);
+    assert.equal(Core.stimulusControlModePresentation('model').manualVisible, false);
+    assert.equal(Core.stimulusControlModePresentation('model').modelVisible, true);
+    assert.equal(Core.stimulusControlModePresentation('both').manualVisible, true);
+    assert.equal(Core.stimulusControlModePresentation('both').modelVisible, true);
     assert.equal(Core.stimulusControlModeAllows('manual', 'manual'), true);
     assert.equal(Core.stimulusControlModeAllows('manual', 'model'), false);
     assert.equal(Core.stimulusControlModeAllows('model', 'manual'), false);
@@ -185,9 +191,58 @@ test('stimulus control mode keeps manual and model triggers explicitly selectabl
     const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.html'), 'utf8');
     const app = fs.readFileSync(path.join(__dirname, '..', 'src', 'app.js'), 'utf8');
     assert.match(html, /id="stimulus-control-mode"/);
+    assert.match(html, /value="manual"/);
+    assert.match(html, /value="model"/);
+    assert.match(html, /value="both"/);
     assert.match(html, /id="home-light-start"/);
-    assert.match(html, /光 CH2 固定/);
-    assert.match(app, /当前控制方式为模型判别，请切换为“手动 \/ 方案”或“两者都可”/);
+    assert.match(html, /id="stimulus-mode-card"/);
+    assert.match(html, /id="stimulus-open-settings"/);
+    assert.match(html, /id="manual-stimulus-settings-dialog"/);
+    assert.match(html, /id="combined-stimulus-settings-dialog"/);
+    assert.match(html, /id="manual-open-plan-manager"/);
+    assert.match(html, /id="plan-manager-dialog"/);
+    assert.match(html, /id="plan-manager-dialog-close"/);
+    assert.doesNotMatch(html, /id="home-plan-manager"/);
+    assert.match(html, /id="sleep-stimulus-config"/);
+    assert.doesNotMatch(html, /id="sleep-stimulus-unavailable"/);
+    assert.match(html, /id="sleep-stimulus-settings-dialog"/);
+    assert.match(html, /id="combined-model-settings"/);
+    assert.match(html, /id="combined-manual-settings"/);
+    assert.ok(html.indexOf('id="next-action"') < html.indexOf('id="impedance-button"'));
+    assert.ok(html.indexOf('id="impedance-button"') < html.indexOf('id="home-stimulus-control-title"'));
+    assert.doesNotMatch(html, /id="realtime-open-stimulus-settings"/);
+    assert.doesNotMatch(html, /class="realtime-stimulus-section"/);
+    assert.match(html, /实时分期/);
+    assert.match(html, /这里只看实时 EEG、分期概率和历史/);
+    assert.match(html, /id="sleep-stimulus-n3-mode-field"/);
+    assert.match(html, /id="sleep-stimulus-n3-probability-field"/);
+    assert.match(html, /id="sleep-stimulus-n3-confidence-field"/);
+    assert.match(html, /id="sleep-stimulus-confidence-field"/);
+    assert.match(html, /id="sleep-stimulus-trigger-summary"/);
+    assert.match(html, /N3 实时触发/);
+    assert.match(html, /高级设置：其他分期实验触发/);
+    assert.match(html, /手动 \/ 方案刺激/);
+    assert.match(html, /中心回顾输出和离线 YASA 结果永远不会触发光刺激/);
+    assert.doesNotMatch(html, /id="model-acquisition-plan-note"/);
+    assert.match(app, /光 CH2（固定）/);
+    assert.match(app, /function renderStimulusModeCard/);
+    assert.match(app, /const manualInputFields = \['home-light-frequency', 'home-light-duration', 'home-light-power'\]/);
+    assert.match(app, /manualStartButton\.disabled = !manualAllowed \|\| !connected/);
+    assert.match(app, /function renderSleepStimulusTriggerFields/);
+    assert.match(app, /N3 候选阈值/);
+    assert.match(app, /function openSleepStimulusSettings/);
+    assert.match(app, /function openManualStimulusSettings/);
+    assert.match(app, /function openStimulusSettingsForMode/);
+    assert.match(app, /function openHomePlanManager/);
+    assert.match(app, /function changeStimulusControlMode/);
+    assert.match(app, /function renderStimulusSources/);
+    assert.match(app, /manualStimulusSourceAvailable/);
+    assert.match(app, /modelStimulusSourceAvailable/);
+    assert.match(app, /function withLightLease/);
+    assert.match(app, /setElementVisibility\('sleep-stimulus-config', modelAllowed\)/);
+    assert.match(app, /preemptSleepStimulus/);
+    assert.match(app, /item\.inferenceMode !== 'causal'/);
+    assert.match(app, /stimulus-control-mode/);
 });
 
 test('plan editor fixes all light actions to CH2', () => {
@@ -502,9 +557,10 @@ test('realtime page exposes a 30-second sleep-stage stimulus protocol with safet
     const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.html'), 'utf8');
     const app = fs.readFileSync(path.join(__dirname, '..', 'src', 'app.js'), 'utf8');
     assert.match(html, /id="sleep-stimulus-enabled"/);
-    for (const stage of ['W', 'N1', 'N2', 'N3', 'REM']) {
+    for (const stage of ['W', 'N1', 'N2', 'REM']) {
         assert.match(html, new RegExp(`name="sleep-stimulus-stage" value="${stage}"`));
     }
+    assert.match(html, /id="sleep-stimulus-n3-enabled"/);
     assert.match(html, /id="sleep-stimulus-confidence"/);
     assert.match(html, /id="sleep-stimulus-n3-mode"/);
     assert.match(html, /id="sleep-stimulus-n3-probability"/);
@@ -521,8 +577,9 @@ test('realtime page exposes a 30-second sleep-stage stimulus protocol with safet
     assert.match(app, /onlineInferenceInput\(\)/);
     assert.match(app, /sleepInferenceGeneration/);
     assert.match(html, /当前因果候选从首个 epoch 开始显示/);
-    assert.match(html, /当前因果输出/);
+    assert.match(html, /实时模型候选/);
     assert.match(html, /候选概率达到阈值/);
+    assert.match(html, /高级设置：其他分期实验触发/);
     assert.match(html, /sleep-stage-postprocess\.js/);
     assert.match(html, /保守后处理/);
     assert.match(app, /sleepN3Postprocessors/);
@@ -534,11 +591,11 @@ test('user-visible product name is Cao Cao while the historical data directory s
     const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
     const report = fs.readFileSync(path.join(__dirname, '..', 'src', 'analysis-report.js'), 'utf8');
     const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
-    assert.match(html, /<title>曹操 v0\.3\.1<\/title>/);
+    assert.match(html, /<title>曹操 v0\.4\.0<\/title>/);
     assert.match(html, /<strong>曹操<\/strong><span>EEG 闭环平台<\/span>/);
     assert.match(main, /title:\s*'曹操'/);
     assert.match(main, /'BrainLume Desktop'/);
-    assert.match(report, /曹操 v0\.3\.1/);
+    assert.match(report, /曹操 v0\.4\.0/);
     assert.match(readme, /^# 曹操$/m);
 });
 

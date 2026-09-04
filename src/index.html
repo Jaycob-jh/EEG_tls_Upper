@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>曹操 v0.3.1</title>
+    <title>曹操 v0.4.0</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -73,52 +73,40 @@
                     </section>
 
                     <aside class="run-panel">
-                        <div class="section-heading compact"><div><p class="eyebrow">SCHEDULE CONTROL</p><h2>方案与控制</h2></div></div>
+                        <div class="section-heading compact"><div><p class="eyebrow">ACQUISITION & CONTROL</p><h2>采集与控制</h2></div></div>
                         <div class="next-action" id="next-action" aria-live="polite">
                             <span class="time">下次执行</span><strong>暂无启用每日计划</strong><small>每日定时、立即运行和手动操作会分别标明来源</small>
                         </div>
-                        <div class="relative-plan-control">
-                            <label>立即运行选择（不改变每日调度）<select id="relative-plan-select"><option value="">暂无可用方案</option></select></label>
-                            <button class="button success" id="relative-plan-toggle" disabled>立即运行</button>
-                        </div>
-                        <div class="home-plan-actions" aria-label="首页方案操作">
-                            <button class="button primary" id="new-plan-button-home" type="button">新建方案</button>
-                            <button class="button secondary" id="edit-plan-button-home" type="button" disabled>编辑所选</button>
-                            <button class="button secondary" id="manage-plan-button-home" type="button">方案管理</button>
-                        </div>
-                        <section class="home-stimulus-control" aria-labelledby="home-stimulus-control-title">
-                            <div class="home-stimulus-heading">
-                                <div><p class="eyebrow">LIGHT OUTPUT</p><strong id="home-stimulus-control-title">光刺激控制</strong><small>光 CH2 固定 · 手动参数仅用于本次启动</small></div>
-                                <label>控制方式<select id="stimulus-control-mode"><option value="manual">手动 / 方案</option><option value="model">模型判别</option><option value="both">手动 / 方案 + 模型</option></select></label>
-                            </div>
-                            <div class="home-stimulus-form">
-                                <label>频率 (Hz)<input id="home-light-frequency" type="number" min="1" max="100" step="1" value="10"></label>
-                                <label>功率/占空比 (%)<input id="home-light-power" type="number" min="0" max="100" step="1" value="5"></label>
-                                <label>单次时长 (ms)<input id="home-light-duration" type="number" min="1" step="1" value="1000"></label>
-                                <div class="home-stimulus-buttons"><button class="button success" id="home-light-start" type="button">手动启动</button><button class="button danger" id="home-light-stop" type="button">停止</button></div>
-                            </div>
-                            <small class="home-stimulus-detail" id="stimulus-control-detail">当前允许手动启动和方案启动；实时模型协议不会触发光刺激。</small>
-                        </section>
                         <div class="quick-actions">
                             <button class="action-button" id="impedance-button"><span>Ω</span><div><strong>手动检测阻抗</strong><small>立即执行 · 不属于每日方案</small></div></button>
                             <button class="action-button" id="status-button"><span>i</span><div><strong>查询状态</strong><small>电量与运行状态</small></div></button>
                             <button class="action-button danger-soft" id="safe-stop-button"><span>■</span><div><strong>全部停止</strong><small>光刺激与 EEG</small></div></button>
                         </div>
+                        <section class="home-stimulus-control" aria-labelledby="home-stimulus-control-title">
+                            <div class="home-stimulus-heading">
+                                <div><p class="eyebrow">LIGHT OUTPUT</p><strong id="home-stimulus-control-title">光刺激控制</strong><small>先选择控制方式，再打开对应设置</small></div>
+                                <label class="home-stimulus-mode-select">控制方式<select id="stimulus-control-mode"><option value="manual">手动 / 方案</option><option value="model">模型判别</option><option value="both">手动 / 方案 + 模型</option></select></label>
+                            </div>
+                            <div class="home-stimulus-mode-card" id="stimulus-mode-card">
+                                <div class="home-stimulus-mode-copy">
+                                    <strong id="stimulus-mode-title">手动 / 方案</strong>
+                                    <small id="stimulus-mode-description">手动按钮和已保存方案可用；模型触发关闭。</small>
+                                    <span id="stimulus-mode-summary">打开弹窗设置手动参数或运行方案。</span>
+                                    <small id="stimulus-mode-live">模型触发关闭</small>
+                                </div>
+                                <span class="state-badge" id="stimulus-mode-status">手动 / 方案可用</span>
+                                <button class="button secondary" id="stimulus-open-settings" type="button">设置手动 / 方案</button>
+                            </div>
+                            <small class="home-stimulus-detail" id="stimulus-control-detail">手动 / 方案；当前只开放手动和方案输出。同一时刻只允许一个光刺激源输出。</small>
+                        </section>
                         <div class="activity-list" id="activity-list"></div>
                     </aside>
                 </div>
-                <details class="home-plan-manager" id="home-plan-manager">
-                    <summary><span><p class="eyebrow">SCHEDULE AUTOMATION</p><strong>方案管理（CH2 固定）</strong><small>在设备首页创建、编辑、启用或停用采集与刺激时间轴</small></span><span class="details-chevron" aria-hidden="true">⌄</span></summary>
-                    <div class="home-plan-manager-body">
-                        <div class="home-plan-manager-heading"><div class="notice">每日方案按本机时钟执行；相对方案从设备首页点击“立即运行”的瞬间计时。这里的“立即运行选择”只决定现在启动哪套方案，不会更改上方的每日下一次执行；要更换每日调度，请在下方启用或停用对应方案。所有方案 EEG 导联固定为 CH2 双极差分。</div><button class="button primary" id="new-plan-button" type="button">新建方案</button></div>
-                        <div class="plan-list" id="plan-list"></div>
-                    </div>
-                </details>
             </section>
 
             <section class="page" id="page-realtime">
                 <div class="section-heading page-heading">
-                    <div><p class="eyebrow">REALTIME PREPROCESSING & SLEEP STAGING</p><h2>实时预处理与睡眠分期</h2></div>
+                    <div><p class="eyebrow">REALTIME EEG & SLEEP STAGING</p><h2>实时分期</h2><small class="page-heading-note">这里只看实时 EEG、分期概率和历史；N3 触发参数请在设备首页设置</small></div>
                     <label class="realtime-enable"><input type="checkbox" id="realtime-enabled" checked> 启用实时分析</label>
                 </div>
                 <div class="notice analysis-disclaimer">研究用途。模型固定接收 21 个 epoch（每个 30 秒）：当前因果候选从首个 epoch 开始显示，收满约 10.5 分钟且整段质量通过后才具备实验性闭环资格；训练一致的中心输出约延迟 5 分钟，仅用于回顾性验证。默认验证模式只记录命中，不发光；结果不构成医疗诊断。</div>
@@ -126,7 +114,7 @@
                     <article class="analysis-metric"><span>模型</span><strong id="realtime-model">加载中</strong><small id="realtime-model-detail">Stage-1 ONNX</small></article>
                     <article class="analysis-metric"><span>模型输入</span><strong>250→100 Hz</strong><small>0.4–18 Hz + 陷波 · 21×30 秒</small></article>
                     <article class="analysis-metric"><span>Epoch</span><strong id="realtime-epoch">0 epoch</strong><small id="realtime-progress">当前窗口 0%</small></article>
-                    <article class="analysis-metric"><span>当前模型候选</span><strong id="realtime-stage">等待数据</strong><small id="realtime-stage-time">尚无结果</small></article>
+                    <article class="analysis-metric"><span>当前分期候选</span><strong id="realtime-stage">等待数据</strong><small id="realtime-stage-time">尚无结果</small></article>
                     <article class="analysis-metric"><span>信号质量</span><strong id="realtime-quality">--</strong><small id="realtime-quality-detail">等待 30 秒 epoch</small></article>
                     <article class="analysis-metric light-state-card" data-light-state="unknown"><span>设备光刺激</span><strong id="realtime-light-state">未连接</strong><small id="realtime-light-detail">无法确认设备光刺激状态</small></article>
                 </div>
@@ -141,44 +129,12 @@
                             <tr><th>输入</th><td>当前选择通道，250 SPS，µV</td></tr>
                             <tr><th>质量门控</th><td>模型滤波后绝对幅值 ≤ 500 µV（临时研究性）及平线检查</td></tr>
                             <tr><th>推理状态</th><td id="realtime-inference-state">等待 EEG</td></tr>
-                            <tr><th>闭环输出</th><td id="realtime-closed-loop-state">未启用</td></tr>
+                            <tr><th>光刺激触发</th><td id="realtime-closed-loop-state">未启用</td></tr>
                         </tbody></table></div>
                     </section>
                 </div>
-                <section class="analysis-section realtime-stimulus-section">
-                    <div class="section-heading compact">
-                        <div><p class="eyebrow">STAGE-TRIGGERED STIMULATION</p><h3>分期触发刺激协议</h3></div>
-                        <label class="realtime-enable"><input type="checkbox" id="sleep-stimulus-enabled"> 启用协议</label>
-                    </div>
-                    <div class="sleep-stimulus-warning">本协议用于研究性验证：可只勾选 N3，按候选概率自动记录命中。分期显示仍经过保守后处理；选择“概率达到阈值”后，不必等待保守分期显示为“N3 已确认”，但仍必须满足当前因果输出、收满 21 个 epoch、上下文和信号质量通过、连续命中及设备状态回读；中心回顾输出永远不会触发。实时质量门控使用模型滤波后的 500 µV 临时研究性门限，不直接对原始 EDF 数值判定，也不会根据未标注数据自动改阈值。1 个 epoch 约 30 秒，连续 2 个约 60 秒。默认是“验证模式”，只记录命中、不向设备发光；确认记录稳定并完成 PSG/人工标签校准后，再手动关闭验证模式并启用协议。点击“全部停止”、停止 EEG、关闭实时分析或 BLE 断开都会解除协议；每次启动软件也需要重新启用。</div>
-                    <div class="sleep-stimulus-form">
-                        <fieldset class="sleep-stage-selector">
-                            <legend>目标分期（可多选）</legend>
-                            <label><input type="checkbox" name="sleep-stimulus-stage" value="W"> W</label>
-                            <label><input type="checkbox" name="sleep-stimulus-stage" value="N1"> N1</label>
-                            <label><input type="checkbox" name="sleep-stimulus-stage" value="N2"> N2</label>
-                            <label><input type="checkbox" name="sleep-stimulus-stage" value="N3"> N3</label>
-                            <label><input type="checkbox" name="sleep-stimulus-stage" value="REM"> REM</label>
-                        </fieldset>
-                        <label>N3 触发依据<select id="sleep-stimulus-n3-mode"><option value="probability">候选概率达到阈值（研究性）</option><option value="confirmed">保守确认后触发</option></select></label>
-                        <label>N3 概率阈值（临时研究性，%）<input id="sleep-stimulus-n3-probability" type="number" min="50" max="100" step="1" value="85"></label>
-                        <label>其他分期置信度 (%)<input id="sleep-stimulus-confidence" type="number" min="50" max="100" step="1" value="80"></label>
-                        <label>连续命中 (epoch)<input id="sleep-stimulus-consecutive" type="number" min="1" max="10" step="1" value="2"></label>
-                        <label>光刺激通道<select id="sleep-stimulus-channel"><option value="1">通道 1</option><option value="2">通道 2</option></select></label>
-                        <label>频率 (Hz)<input id="sleep-stimulus-frequency" type="number" min="1" max="100" step="1" value="10"></label>
-                        <label>功率/占空比 (%)<input id="sleep-stimulus-power" type="number" min="0" max="100" step="1" value="5"></label>
-                        <label>单次时长 (秒)<input id="sleep-stimulus-duration" type="number" min="1" max="3600" step="1" value="10"></label>
-                        <label>冷却时间 (分钟)<input id="sleep-stimulus-cooldown" type="number" min="1" max="1440" step="1" value="15"></label>
-                        <label class="sleep-shadow-toggle"><input type="checkbox" id="sleep-stimulus-shadow-mode" checked> 验证模式（仅记录命中，不发光）</label>
-                        <button class="button secondary" id="sleep-stimulus-save" type="button">保存参数</button>
-                    </div>
-                    <div class="sleep-stimulus-status-grid">
-                        <div class="sleep-stimulus-status"><strong>协议状态</strong><span id="sleep-stimulus-status">未启用</span><small id="sleep-stimulus-mode">默认验证模式</small></div>
-                        <div class="sleep-stimulus-status light-device-status" data-light-state="unknown"><i aria-hidden="true"></i><strong>设备光刺激</strong><span id="sleep-stimulus-device-state">未连接</span><small id="sleep-stimulus-device-detail">无法确认设备光刺激状态</small></div>
-                    </div>
-                </section>
                 <section class="analysis-section realtime-history-section">
-                    <div class="section-heading compact"><div><p class="eyebrow">STAGING HISTORY</p><h3>实时分期记录</h3></div></div>
+                    <div class="section-heading compact"><div><p class="eyebrow">STAGING HISTORY · READ ONLY</p><h3>实时分期记录</h3><small class="page-heading-note">当前因果结果可参与 N3 触发；此处历史记录只读</small></div></div>
                     <div class="analysis-table-wrap"><table class="analysis-table"><thead><tr><th>输出时间</th><th>对应 epoch</th><th>分期</th><th>模型概率</th><th>质量</th><th>光刺激</th><th>W</th><th>N1</th><th>N2</th><th>N3</th><th>REM</th></tr></thead><tbody id="realtime-history"><tr><td colspan="11">尚无分期结果</td></tr></tbody></table></div>
                 </section>
             </section>
@@ -283,6 +239,136 @@
                 <button type="button" class="button primary" id="save-plan-button">保存方案</button>
             </div>
         </form>
+    </dialog>
+
+    <dialog id="plan-manager-dialog" class="modal plan-manager-modal" aria-labelledby="plan-manager-dialog-title">
+        <div class="modal-content plan-manager-content">
+            <div class="section-heading compact plan-manager-dialog-heading">
+                <div><p class="eyebrow">SCHEDULE AUTOMATION</p><h2 id="plan-manager-dialog-title">方案管理（CH2 固定）</h2><small>集中新建、编辑、启用/停用和删除 EEG 采集方案。</small></div>
+                <button type="button" class="icon-button" id="plan-manager-dialog-close" aria-label="关闭方案管理">×</button>
+            </div>
+            <div class="plan-manager-body">
+                <div class="plan-manager-heading">
+                    <div class="notice">每日方案按本机时钟执行；相对方案从“立即运行”的瞬间计时。立即运行只启动当前选择，不会更改每日调度；所有方案 EEG 导联固定为 CH2 双极差分。</div>
+                    <button class="button primary" id="new-plan-button" type="button">新建方案</button>
+                </div>
+                <div class="plan-list" id="plan-list"></div>
+            </div>
+        </div>
+    </dialog>
+
+    <dialog id="manual-stimulus-settings-dialog" class="modal light-settings-modal" aria-labelledby="manual-stimulus-settings-title">
+        <div class="modal-content light-settings-content">
+            <div class="section-heading compact">
+                <div><p class="eyebrow">MANUAL / PLAN OUTPUT</p><h2 id="manual-stimulus-settings-title">手动 / 方案设置</h2><small>当前控制方式允许手动按钮和已保存方案输出；这里的设置不会调用睡眠模型。</small></div>
+                <button type="button" class="icon-button" id="manual-stimulus-settings-close" aria-label="关闭手动 / 方案设置">×</button>
+            </div>
+            <div class="light-settings-body">
+                <section class="light-settings-group">
+                    <div class="light-settings-group-heading"><div><p class="eyebrow">MANUAL LIGHT</p><h3>手动刺激</h3><small>未连接时可先编辑参数；连接设备后才能执行。</small></div><span class="mode-panel-tag">立即执行一次</span></div>
+                    <div class="home-stimulus-form">
+                        <label>频率 (Hz)<input id="home-light-frequency" type="number" min="1" max="100" step="1" value="10"></label>
+                        <label>功率/占空比 (%)<input id="home-light-power" type="number" min="0" max="100" step="1" value="5"></label>
+                        <label title="本次手动光刺激持续的时间">刺激时长 (ms)<input id="home-light-duration" type="number" min="1" step="1" value="1000"></label>
+                        <div class="home-stimulus-buttons"><button class="button success" id="home-light-start" type="button">手动启动</button><button class="button danger" id="home-light-stop" type="button">停止</button></div>
+                    </div>
+                </section>
+                <section class="light-settings-group">
+                    <div class="light-settings-group-heading"><div><p class="eyebrow">SAVED PLAN</p><h3>运行已保存方案</h3><small>立即运行不会改变每日定时；方案内容在“方案管理”中编辑。</small></div></div>
+                    <div id="home-plan-controls" class="home-plan-controls-in-stimulus">
+                        <div class="relative-plan-control">
+                            <label>选择方案<select id="relative-plan-select"><option value="">暂无可用方案</option></select></label>
+                            <button class="button success" id="relative-plan-toggle" disabled>立即运行</button>
+                        </div>
+                        <div class="light-settings-plan-actions"><button class="button secondary" id="manual-open-plan-manager" type="button">打开方案管理</button></div>
+                    </div>
+                </section>
+            </div>
+        </div>
+    </dialog>
+
+    <dialog id="combined-stimulus-settings-dialog" class="modal light-settings-modal" aria-labelledby="combined-stimulus-settings-title">
+        <div class="modal-content light-settings-content">
+            <div class="section-heading compact">
+                <div><p class="eyebrow">COMBINED OUTPUT</p><h2 id="combined-stimulus-settings-title">手动 / 方案 + 模型</h2><small>两种来源都开放，但同一时刻只允许一路光刺激输出。</small></div>
+                <button type="button" class="icon-button" id="combined-stimulus-settings-close" aria-label="关闭组合设置">×</button>
+            </div>
+            <div class="combined-settings-body">
+                <section class="combined-settings-card">
+                    <div><strong>模型判别</strong><small id="combined-model-summary">N3：模型未启用</small></div>
+                    <button class="button secondary" id="combined-model-settings" type="button">设置模型触发</button>
+                </section>
+                <section class="combined-settings-card">
+                    <div><strong>手动 / 方案</strong><small id="combined-manual-summary">手动按钮和已保存方案可用。</small></div>
+                    <button class="button secondary" id="combined-manual-settings" type="button">设置手动 / 方案</button>
+                </section>
+            </div>
+        </div>
+    </dialog>
+
+    <dialog id="sleep-stimulus-settings-dialog" class="modal sleep-stimulus-settings-modal" aria-labelledby="sleep-stimulus-settings-title">
+        <div class="modal-content sleep-stimulus-settings-content">
+            <div class="section-heading compact sleep-stimulus-dialog-heading">
+                <div><p class="eyebrow">MODEL TRIGGER SETTINGS</p><h2 id="sleep-stimulus-settings-title">N3 实时触发设置</h2><small id="sleep-stimulus-dialog-mode">只配置实时模型；手动 / 方案刺激在设备首页独立管理</small></div>
+                <div class="sleep-stimulus-dialog-actions">
+                    <label class="realtime-enable"><input type="checkbox" id="sleep-stimulus-enabled"> 启用自动触发</label>
+                    <button type="button" class="icon-button" id="sleep-stimulus-settings-close" aria-label="关闭模型设置">×</button>
+                </div>
+            </div>
+            <div id="sleep-stimulus-config">
+                <div class="sleep-stimulus-warning">
+                    <strong>N3 实时触发：默认验证模式（只记录命中，不发光）。</strong>
+                    <span id="sleep-stimulus-trigger-summary">默认只对当前因果模型候选执行质量、概率和连续稳定门控；必须收满 21 个 epoch、上下文与信号质量通过、且设备状态已确认。</span>
+                    <details class="sleep-stimulus-more"><summary>查看触发条件与安全边界</summary><p>实时触发只接受当前因果输出；中心回顾输出和离线 YASA 结果永远不会触发光刺激。实时质量门控使用模型滤波后的 500 µV 临时研究性门限，不直接用原始 EDF 数值判定，也不会根据未标注数据自动改阈值。1 个 epoch 约 30 秒；点击“全部停止”、停止 EEG、关闭实时分析或 BLE 断开都会解除协议，应用重新启动后需要再次启用。完成 PSG/人工标签校准前，不建议关闭验证模式。</p></details>
+                </div>
+                <div class="sleep-stimulus-form">
+                    <fieldset class="sleep-stimulus-group sleep-stimulus-primary-group">
+                        <legend>N3 实时触发（默认）</legend>
+                        <div class="sleep-stimulus-primary-grid">
+                            <label class="sleep-stage-fixed"><span>目标分期</span><strong><input type="checkbox" id="sleep-stimulus-n3-enabled" checked> N3</strong><small class="sleep-stimulus-field-help">只使用当前因果模型候选，不等待中心/离线结果。</small></label>
+                            <label id="sleep-stimulus-n3-mode-field">N3 触发依据<select id="sleep-stimulus-n3-mode"><option value="probability">实时候选概率达到阈值（响应快，研究性）</option><option value="confirmed">保守后处理确认（更稳健，可能延迟）</option></select><small class="sleep-stimulus-field-help" id="sleep-stimulus-n3-mode-help">默认按当前因果候选的 N3 概率判断；不使用中心或离线输出。</small></label>
+                            <label id="sleep-stimulus-n3-probability-field" title="这是触发条件，不是当前 epoch 的实际 N3 概率">N3 触发概率阈值 (%)<input id="sleep-stimulus-n3-probability" type="number" min="50" max="100" step="1" value="" placeholder="读取中"><small class="sleep-stimulus-field-help">仅在“实时候选概率达到阈值”时使用；不是当前 epoch 的实际概率显示。</small></label>
+                            <label id="sleep-stimulus-n3-confidence-field">N3 保守确认置信度 (%)<input id="sleep-stimulus-n3-confidence" type="number" min="50" max="100" step="1" value="80"><small class="sleep-stimulus-field-help">仅在“保守后处理确认”时使用；要求 N3 先通过独立后处理。</small></label>
+                            <label>连续命中（epoch）<input id="sleep-stimulus-consecutive" type="number" min="1" max="10" step="1" value="2"><small class="sleep-stimulus-field-help">每个 epoch 30 秒；2 个表示连续约 60 秒。</small></label>
+                        </div>
+                    </fieldset>
+                    <details class="sleep-stimulus-advanced" id="sleep-stimulus-advanced-other-stages">
+                        <summary>高级设置：其他分期实验触发</summary>
+                        <div class="sleep-stimulus-advanced-body">
+                            <p>仅用于实验比较；不会改变 N3 默认规则。其他分期使用各自的实时模型候选和通用置信度门控，不使用 N3 阈值。</p>
+                            <fieldset class="sleep-stimulus-group">
+                                <legend>实验目标（可多选）</legend>
+                                <div class="sleep-stage-selector">
+                                    <label><input type="checkbox" name="sleep-stimulus-stage" value="W"> W</label>
+                                    <label><input type="checkbox" name="sleep-stimulus-stage" value="N1"> N1</label>
+                                    <label><input type="checkbox" name="sleep-stimulus-stage" value="N2"> N2</label>
+                                    <label><input type="checkbox" name="sleep-stimulus-stage" value="REM"> REM</label>
+                                </div>
+                                <label id="sleep-stimulus-confidence-field"><span id="sleep-stimulus-confidence-label">其他分期置信度 (%)</span><input id="sleep-stimulus-confidence" type="number" min="50" max="100" step="1" value="80"><small class="sleep-stimulus-field-help" id="sleep-stimulus-confidence-help">仅在选择其他分期后使用；N3 使用默认区域的专用阈值。</small></label>
+                            </fieldset>
+                        </div>
+                    </details>
+                    <fieldset class="sleep-stimulus-group">
+                        <legend>光刺激参数</legend>
+                        <div class="sleep-stimulus-group-grid light-parameter-grid">
+                            <label>光刺激通道<select id="sleep-stimulus-channel"><option value="1">通道 1</option><option value="2">通道 2</option></select></label>
+                            <label>频率 (Hz)<input id="sleep-stimulus-frequency" type="number" min="1" max="100" step="1" value="10"></label>
+                            <label>功率/占空比 (%)<input id="sleep-stimulus-power" type="number" min="0" max="100" step="1" value="5"></label>
+                            <label title="每次满足触发条件后，光刺激持续的时间">刺激时长 (秒)<input id="sleep-stimulus-duration" type="number" min="1" max="3600" step="1" value="10"></label>
+                            <label title="两次自动触发开始之间至少间隔的时间">两次触发最短间隔 (分钟)<input id="sleep-stimulus-cooldown" type="number" min="1" max="1440" step="1" value="15"></label>
+                        </div>
+                    </fieldset>
+                    <div class="sleep-stimulus-actions">
+                        <label class="sleep-shadow-toggle"><input type="checkbox" id="sleep-stimulus-shadow-mode" checked> 验证模式（仅记录命中，不发光）</label>
+                        <button class="button secondary" id="sleep-stimulus-save" type="button">保存参数</button>
+                    </div>
+                </div>
+                <div class="sleep-stimulus-status-grid">
+                    <div class="sleep-stimulus-status"><strong>协议状态</strong><span id="sleep-stimulus-status">未启用</span><small id="sleep-stimulus-mode">默认验证模式</small></div>
+                    <div class="sleep-stimulus-status light-device-status" data-light-state="unknown"><i aria-hidden="true"></i><strong>设备光刺激</strong><span id="sleep-stimulus-device-state">未连接</span><small id="sleep-stimulus-device-detail">无法确认设备光刺激状态</small></div>
+                </div>
+            </div>
+        </div>
     </dialog>
 
     <div class="toast-stack" id="toast-stack" aria-live="polite"></div>

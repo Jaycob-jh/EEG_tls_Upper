@@ -13,6 +13,8 @@ test('analysis page exposes the independent YASA verification entry point', () =
     const preload = read('preload.js');
     assert.match(html, /id="analysis-yasa-button"/);
     assert.match(html, /YASA 离线睡眠分期复核/);
+    assert.match(html, /YASA 离线睡眠分期复核（仅复核）/);
+    assert.match(html, /YASA 只读取记录并生成对照结果，不参与实时光刺激/);
     assert.match(ui, /window\.desktopAPI\.runYasaStaging/);
     assert.match(main, /ipcMain\.handle\('analysis:yasa'/);
     assert.match(preload, /runYasaStaging/);
@@ -27,6 +29,8 @@ test('analysis page exposes persisted online staging history for each selected s
     assert.match(html, /ONLINE STAGING HISTORY/);
     assert.match(html, /id="analysis-online-staging-body"/);
     assert.match(html, /id="analysis-online-staging-refresh"/);
+    assert.match(html, /采集时在线分期记录（仅复核）/);
+    assert.match(html, /中心回顾输出和实时历史在此汇总，不会从分析窗口触发光刺激/);
     assert.match(ui, /loadOnlineStagingHistory/);
     assert.match(ui, /当前因果/);
     assert.match(ui, /中心回顾/);
@@ -134,7 +138,7 @@ test('home schedule wording separates daily execution, immediate runs and manual
     const html = read('src/index.html');
     const app = read('src/app.js');
     assert.match(html, /下次执行/);
-    assert.match(html, /立即运行选择（不改变每日调度）/);
+    assert.match(html, /立即运行不会改变每日定时/);
     assert.match(html, /手动检测阻抗/);
     assert.match(app, /function formatScheduledDateTime/);
     assert.match(app, /来源：\$\{escapeHtml\(dailySource\(next\.plan\)\)\}/);

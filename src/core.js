@@ -17,6 +17,23 @@
         model: '模型判别',
         both: '手动 / 方案 + 模型',
     });
+    const STIMULUS_CONTROL_MODE_PRESENTATION = Object.freeze({
+        manual: Object.freeze({
+            manualVisible: true,
+            modelVisible: false,
+            detail: '当前只显示手动启动和固定时间方案；实时模型不会触发光刺激。',
+        }),
+        model: Object.freeze({
+            manualVisible: false,
+            modelVisible: true,
+            detail: '当前只显示实时模型触发；EEG 采集方案仍可运行，方案中的光刺激动作会被安全跳过。',
+        }),
+        both: Object.freeze({
+            manualVisible: true,
+            modelVisible: true,
+            detail: '手动/方案与实时模型均可触发；系统仍会阻止同一时刻重复发光。',
+        }),
+    });
     const START_GRACE_SECONDS = 5;
     const SAFETY_ACTIONS = new Set(['light_stop', 'eeg_stop']);
     const DAILY_START_ACTIONS = new Set(['light_start', 'eeg_start']);
@@ -45,6 +62,11 @@
     function normalizeStimulusControlMode(value) {
         const mode = String(value || '').trim();
         return STIMULUS_CONTROL_MODES.includes(mode) ? mode : 'manual';
+    }
+
+    function stimulusControlModePresentation(mode) {
+        const normalizedMode = normalizeStimulusControlMode(mode);
+        return STIMULUS_CONTROL_MODE_PRESENTATION[normalizedMode];
     }
 
     // "manual" includes an explicitly started light command and a user-created
@@ -550,8 +572,8 @@
     }
 
     return Object.freeze({
-        ACTION_TYPES, PLAN_MODES, STIMULUS_CONTROL_MODES, STIMULUS_CONTROL_MODE_LABELS,
-        normalizeStimulusControlMode, stimulusControlModeAllows, START_GRACE_SECONDS,
+        ACTION_TYPES, PLAN_MODES, STIMULUS_CONTROL_MODES, STIMULUS_CONTROL_MODE_LABELS, STIMULUS_CONTROL_MODE_PRESENTATION,
+        normalizeStimulusControlMode, stimulusControlModePresentation, stimulusControlModeAllows, START_GRACE_SECONDS,
         WAVEFORM_X_RANGES_SECONDS, WAVEFORM_REFRESH_RATES_FPS, normalizeWaveformDisplay,
         formatDuration, sampleCountToSeconds, waveformScale, deviceOperationPresentation,
         FIXED_PLAN_EEG_CHANNEL, FIXED_PLAN_LIGHT_CHANNEL, normalizePlan,

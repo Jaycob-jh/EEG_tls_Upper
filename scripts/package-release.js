@@ -59,6 +59,9 @@ async function main() {
         appBundleId: platform === 'darwin' ? 'com.caocao.eeg' : undefined,
         icon,
         ignore: filePath => shouldIgnore(platform, filePath),
+        ...(process.env.BRAINLUME_ELECTRON_ZIP_DIR
+            ? { electronZipDir: path.resolve(process.env.BRAINLUME_ELECTRON_ZIP_DIR) }
+            : {}),
     };
     await fsp.mkdir(output, { recursive: true });
     console.log(`Packaging ${PACKAGE.productName} ${PACKAGE.version} for ${platform}-${arch}`);

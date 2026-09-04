@@ -17,6 +17,8 @@
     function loadSleepStimulusProtocol() {
         try {
             const stored = JSON.parse(localStorage.getItem('sleepStimulusProtocol') || '{}');
+            // Keep both supported N3 trigger bases readable across upgrades,
+            // while forcing the live protocol off at startup for safety.
             const protocol = { ...Sleep.normalizeStimulusProtocol(stored), enabled: false };
             if (Sleep.validateStimulusProtocol(protocol).length) throw new Error('invalid stored protocol');
             return protocol;
@@ -87,6 +89,7 @@
         sleepStimulusStopTimer: null,
         sleepStimulusActiveChannel: null,
         sleepEpochLightChannels: new Set(),
+        lightLeasePromise: Promise.resolve(),
     };
 
     const planEngine = new Core.PlanEngine({
@@ -251,7 +254,7 @@
         }
         updateIndicatorUi();
         renderLightStimulusState();
-        renderStimulusControlMode();
+        renderStimulusSources();
         renderNextAction();
     }
 
@@ -266,29 +269,211 @@
         button.title = state.indicatorRunning ? '发送功能码 02，关闭设备指示灯' : '发送功能码 02，开启设备指示灯';
     }
 
-    function renderStimulusControlMode() {
-        const select = $('stimulus-control-mode');
-        if (!select) return;
+    function setElementVisibility(id, visible) {
+        const element = $(id);
+        if (!element) return;
+        element.hidden = !visible;
+        element.setAttribute('aria-hidden', String(!visible));
+    }
+
+    // The dropdown selects which output sources are allowed. Settings are
+    // opened in a mode-specific dialog; the light-command lease still
+    // arbitrates so only one source can occupy the hardware at a time.
+    function manualStimulusSourceAvailable() {
+        return Core.stimulusControlModeAllows(state.stimulusControlMode, 'manual');
+    }
+
+    function modelStimulusSourceAvailable() {
+        return Core.stimulusControlModeAllows(state.stimulusControlMode, 'model');
+    }
+
+    function sleepStimulusTriggerSummary(protocol = {}) {
+        const targets = [...new Set(protocol.targetStages || [])];
+        const hasN3 = targets.includes('N3');
+        const otherTargets = targets.filter(stage => stage !== 'N3');
+        const parts = [];
+        if (hasN3) {
+            parts.push(protocol.n3TriggerMode === 'confirmed'
+                ? `N3 保守确认 ≥ ${Math.round(protocol.minN3Confidence * 100)}%`
+                : `N3 候选阈值 ≥ ${Math.round(protocol.minN3Probability * 100)}%`);
+        }
+        if (otherTargets.length) parts.push(`其他分期实验：${otherTargets.join('、')} · 置信度 ≥ ${Math.round(protocol.minConfidence * 100)}%`);
+        const targetLabel = targets.length ? targets.join('/') : '未选择目标';
+        return `目标 ${targetLabel} · ${parts.join(' · ') || '请先选择触发条件'} · 连续 ${protocol.consecutiveEpochs || 0} 个 epoch`;
+    }
+
+    function renderStimulusModeCard() {
         const mode = Core.normalizeStimulusControlMode(state.stimulusControlMode);
-        state.stimulusControlMode = mode;
-        select.value = mode;
-        const manualAllowed = Core.stimulusControlModeAllows(mode, 'manual');
+        const protocol = state.sleepStimulusProtocol;
+        const modelAllowed = modelStimulusSourceAvailable();
+        const manualAllowed = manualStimulusSourceAvailable();
+        const labels = Core.STIMULUS_CONTROL_MODE_LABELS;
+        const modelStatus = !modelAllowed
+            ? '模型触发未启用'
+            : (protocol.enabled ? (protocol.shadowMode ? '模型验证中' : '模型主动触发') : '模型未启用');
+        const modeCopy = {
+            manual: {
+                title: labels.manual,
+                description: '手动按钮和已保存方案可用；模型触发关闭。',
+                summary: '打开弹窗设置手动参数或运行方案。',
+                button: '设置手动 / 方案',
+                status: '手动 / 方案可用',
+            },
+            model: {
+                title: labels.model,
+                description: '只允许当前因果模型候选进入实时触发。',
+                summary: `N3 · ${sleepStimulusTriggerSummary(protocol)}`,
+                button: '设置模型触发',
+                status: modelStatus,
+            },
+            both: {
+                title: labels.both,
+                description: '手动 / 方案和模型都可用；同一时刻只允许一路输出。',
+                summary: `模型：${modelStatus} · 手动 / 方案可用`,
+                button: '设置两种方式',
+                status: '两种方式可用',
+            },
+        }[mode];
+        const title = $('stimulus-mode-title');
+        const description = $('stimulus-mode-description');
+        const summary = $('stimulus-mode-summary');
+        const live = $('stimulus-mode-live');
+        const status = $('stimulus-mode-status');
+        const button = $('stimulus-open-settings');
+        const select = $('stimulus-control-mode');
+        if (select) select.value = mode;
+        if (title) title.textContent = modeCopy.title;
+        if (description) description.textContent = modeCopy.description;
+        if (summary) summary.textContent = modeCopy.summary;
+        if (live) live.textContent = mode === 'model'
+            ? (protocol.enabled
+                ? (protocol.shadowMode ? '验证模式 · 只记录命中，不发光' : '主动模式 · 满足门控后才允许发光')
+                : '协议未启用 · 默认验证模式，不发光')
+            : (mode === 'both' ? '模型和手动 / 方案分别配置' : '模型触发关闭');
+        if (status) {
+            status.className = `state-badge ${mode === 'model' && !protocol.enabled ? 'off' : ''}`;
+            status.textContent = modeCopy.status;
+        }
+        if (button) button.textContent = modeCopy.button;
+        const card = $('stimulus-mode-card');
+        if (card) card.dataset.mode = mode;
+        const dialogMode = $('sleep-stimulus-dialog-mode');
+        if (dialogMode) {
+            dialogMode.textContent = mode === 'both'
+                ? '当前为组合模式；模型和手动 / 方案分别在各自弹窗中配置'
+                : '只配置实时模型；手动 / 方案在独立弹窗中配置';
+        }
+        const combinedModelSummary = $('combined-model-summary');
+        if (combinedModelSummary) combinedModelSummary.textContent = `N3：${modelStatus} · ${sleepStimulusTriggerSummary(protocol)}`;
+        const combinedManualSummary = $('combined-manual-summary');
+        if (combinedManualSummary) combinedManualSummary.textContent = manualAllowed
+            ? '手动按钮和已保存方案可用，参数在手动 / 方案设置中管理。'
+            : '当前控制方式未开放手动 / 方案。';
+    }
+
+    function openSleepStimulusSettings() {
+        const dialog = $('sleep-stimulus-settings-dialog');
+        if (!dialog) return;
+        $('combined-stimulus-settings-dialog')?.close();
+        $('manual-stimulus-settings-dialog')?.close();
+        renderStimulusSources();
+        renderSleepStimulusProtocol();
+        if (!dialog.open) dialog.showModal();
+        requestAnimationFrame(() => $('sleep-stimulus-n3-enabled')?.focus({ preventScroll: true }));
+    }
+
+    function openManualStimulusSettings() {
+        const dialog = $('manual-stimulus-settings-dialog');
+        if (!dialog) return;
+        $('combined-stimulus-settings-dialog')?.close();
+        $('sleep-stimulus-settings-dialog')?.close();
+        renderStimulusSources();
+        renderNextAction();
+        if (!dialog.open) dialog.showModal();
+        requestAnimationFrame(() => $('home-light-frequency')?.focus({ preventScroll: true }));
+    }
+
+    function openCombinedStimulusSettings() {
+        const dialog = $('combined-stimulus-settings-dialog');
+        if (!dialog) return;
+        renderStimulusSources();
+        if (!dialog.open) dialog.showModal();
+    }
+
+    function openStimulusSettingsForMode(mode = state.stimulusControlMode) {
+        const normalizedMode = Core.normalizeStimulusControlMode(mode);
+        if (normalizedMode === 'model') return openSleepStimulusSettings();
+        if (normalizedMode === 'both') return openCombinedStimulusSettings();
+        return openManualStimulusSettings();
+    }
+
+    function openHomePlanManager() {
+        const manager = $('plan-manager-dialog');
+        if (!manager) return;
+        $('manual-stimulus-settings-dialog')?.close();
+        $('combined-stimulus-settings-dialog')?.close();
+        renderPlans();
+        if (!manager.open) manager.showModal();
+    }
+
+    async function changeStimulusControlMode(value) {
+        const previousMode = state.stimulusControlMode;
+        const mode = Core.normalizeStimulusControlMode(value);
+        if (mode === previousMode) {
+            openStimulusSettingsForMode(mode);
+            return;
+        }
+        const removesManual = !Core.stimulusControlModeAllows(mode, 'manual');
+        const removesModel = !Core.stimulusControlModeAllows(mode, 'model');
+        try {
+            if (removesManual && (state.lightRunning[1] || state.lightRunning[2]) && !state.sleepStimulusActiveChannel) {
+                throw new Error('当前有手动或方案光刺激正在运行，请先停止后再切换控制方式');
+            }
+            state.stimulusControlMode = mode;
+            localStorage.setItem('stimulusControlMode', mode);
+            renderStimulusSources();
+            // Open synchronously from the select change so macOS keeps the
+            // user gesture associated with the requested mode-specific dialog.
+            openStimulusSettingsForMode(mode);
+            if (removesModel && (state.sleepStimulusProtocol.enabled || state.sleepStimulusActiveChannel)) {
+                await disableSleepStimulus(`切换至${Core.STIMULUS_CONTROL_MODE_LABELS[mode]}`);
+            }
+            await audit('stimulus_control_mode_changed', { mode, previousMode });
+        } catch (error) {
+            state.stimulusControlMode = previousMode;
+            localStorage.setItem('stimulusControlMode', previousMode);
+            ['manual-stimulus-settings-dialog', 'combined-stimulus-settings-dialog', 'sleep-stimulus-settings-dialog']
+                .forEach(id => $(id)?.close());
+            renderStimulusSources();
+            throw error;
+        }
+    }
+
+    function renderStimulusSources() {
+        const manualAllowed = manualStimulusSourceAvailable();
+        const modelAllowed = modelStimulusSourceAvailable();
         const connected = state.connected;
-        const manualFields = ['home-light-frequency', 'home-light-duration', 'home-light-power', 'home-light-start'];
-        manualFields.forEach(id => {
+        const manualInputFields = ['home-light-frequency', 'home-light-duration', 'home-light-power'];
+        manualInputFields.forEach(id => {
             const element = $(id);
-            if (element) element.disabled = !manualAllowed || !connected;
+            if (element) element.disabled = !manualAllowed;
         });
+        const manualStartButton = $('home-light-start');
+        if (manualStartButton) manualStartButton.disabled = !manualAllowed || !connected;
         const stopButton = $('home-light-stop');
         if (stopButton) stopButton.disabled = !connected;
+        setElementVisibility('sleep-stimulus-config', modelAllowed);
+        const modelEnableLabel = $('sleep-stimulus-enabled')?.closest('.realtime-enable');
+        if (modelEnableLabel) modelEnableLabel.hidden = !modelAllowed;
+        const modelEnableToggle = $('sleep-stimulus-enabled');
+        if (modelEnableToggle) modelEnableToggle.disabled = !modelAllowed;
+        const settingsDialog = $('sleep-stimulus-settings-dialog');
+        if (!modelAllowed && settingsDialog?.open) settingsDialog.close();
+        const manualSettingsDialog = $('manual-stimulus-settings-dialog');
+        if (!manualAllowed && manualSettingsDialog?.open) manualSettingsDialog.close();
         const detail = $('stimulus-control-detail');
-        if (detail) {
-            detail.textContent = mode === 'model'
-                ? '当前仅允许实时模型协议触发；手动按钮和方案中的光动作已暂停。'
-                : (mode === 'both'
-                    ? '手动/方案与模型协议均可触发；同一时刻仍只允许一路光刺激。'
-                    : '当前允许手动启动和方案启动；实时模型协议不会触发光刺激。');
-        }
+        if (detail) detail.textContent = `${Core.STIMULUS_CONTROL_MODE_LABELS[state.stimulusControlMode]}；${Core.stimulusControlModePresentation(state.stimulusControlMode).detail} 同一时刻只允许一个光刺激源输出。`;
+        renderStimulusModeCard();
     }
 
     function updateStreamMetricsUi(nowMs = performance.now()) {
@@ -382,12 +567,16 @@
     }
 
     function sleepStimulusProtocolFromForm(enabled = state.sleepStimulusProtocol.enabled) {
+        const targetStages = [];
+        if ($('sleep-stimulus-n3-enabled')?.checked) targetStages.push('N3');
+        targetStages.push(...[...document.querySelectorAll('input[name="sleep-stimulus-stage"]:checked')].map(input => input.value));
         return Sleep.normalizeStimulusProtocol({
             enabled,
             shadowMode: $('sleep-stimulus-shadow-mode').checked,
-            targetStages: [...document.querySelectorAll('input[name="sleep-stimulus-stage"]:checked')].map(input => input.value),
-            n3TriggerMode: $('sleep-stimulus-n3-mode').value,
+            targetStages: [...new Set(targetStages)],
+            n3TriggerMode: $('sleep-stimulus-n3-mode')?.value || 'probability',
             minN3Probability: Number($('sleep-stimulus-n3-probability').value) / 100,
+            minN3Confidence: Number($('sleep-stimulus-n3-confidence').value) / 100,
             minConfidence: Number($('sleep-stimulus-confidence').value) / 100,
             consecutiveEpochs: Number($('sleep-stimulus-consecutive').value),
             lightChannel: Number($('sleep-stimulus-channel').value),
@@ -401,6 +590,10 @@
     function setSleepStimulusStatus(message) {
         $('sleep-stimulus-status').textContent = message;
         $('realtime-closed-loop-state').textContent = message;
+        if (state.sleepStimulusProtocol.enabled && modelStimulusSourceAvailable()) {
+            const element = $('stimulus-mode-live');
+            if (element) element.textContent = message;
+        }
     }
 
     function renderLightStimulusState() {
@@ -421,14 +614,59 @@
         $('sleep-stimulus-device-state').closest('.light-device-status').dataset.lightState = presentation.tone;
     }
 
+    function renderSleepStimulusTriggerFields(protocol = null) {
+        const selectedStages = protocol
+            ? protocol.targetStages
+            : [
+                $('sleep-stimulus-n3-enabled')?.checked ? 'N3' : null,
+                ...[...document.querySelectorAll('input[name="sleep-stimulus-stage"]:checked')].map(input => input.value),
+            ].filter(Boolean);
+        const targetStages = new Set(selectedStages || []);
+        const includesN3 = targetStages.has('N3');
+        const nonN3Stages = ['W', 'N1', 'N2', 'REM'].filter(stage => targetStages.has(stage));
+        const n3TriggerMode = protocol?.n3TriggerMode || $('sleep-stimulus-n3-mode')?.value || 'probability';
+        const n3ConfidenceVisible = includesN3 && n3TriggerMode === 'confirmed';
+        const otherConfidenceVisible = nonN3Stages.length > 0;
+        setElementVisibility('sleep-stimulus-n3-mode-field', includesN3);
+        setElementVisibility('sleep-stimulus-n3-probability-field', includesN3 && n3TriggerMode === 'probability');
+        setElementVisibility('sleep-stimulus-n3-confidence-field', n3ConfidenceVisible);
+        setElementVisibility('sleep-stimulus-confidence-field', otherConfidenceVisible);
+        const modeHelp = $('sleep-stimulus-n3-mode-help');
+        if (modeHelp) {
+            modeHelp.textContent = n3TriggerMode === 'confirmed'
+                ? '先由独立 N3 后处理确认，再按置信度和连续命中判断；反应可能更慢。'
+                : '直接使用当前因果候选的 N3 概率判断，响应更快；属于研究性闭环。';
+        }
+        const confidenceHelp = $('sleep-stimulus-confidence-help');
+        if (confidenceHelp) {
+            confidenceHelp.textContent = nonN3Stages.length
+                ? `仅用于 ${nonN3Stages.join('、')}；N3 使用默认区域的专用阈值。`
+                : '当前没有其他分期目标，此项不会参与判断。';
+        }
+        const triggerSummary = $('sleep-stimulus-trigger-summary');
+        if (triggerSummary) {
+            const targetText = targetStages.size ? [...targetStages].join('、') : '尚未选择';
+            const modeText = includesN3
+                ? (n3TriggerMode === 'confirmed'
+                    ? 'N3 使用保守后处理确认及连续稳定门控'
+                    : 'N3 使用当前因果候选概率及连续稳定门控')
+                : '当前未启用 N3 实时触发';
+            const otherText = nonN3Stages.length ? '其他分期为实验性目标' : '其他分期实验未启用';
+            triggerSummary.textContent = `当前目标：${targetText}；${modeText}；${otherText}；必须收满 21 个 epoch、上下文与信号质量通过、连续命中且设备状态已确认。`;
+        }
+    }
+
     function renderSleepStimulusProtocol() {
         const protocol = state.sleepStimulusProtocol;
-        $('sleep-stimulus-enabled').checked = protocol.enabled;
+        const modelAllowed = modelStimulusSourceAvailable();
+        $('sleep-stimulus-enabled').checked = modelAllowed && protocol.enabled;
+        $('sleep-stimulus-n3-enabled').checked = protocol.targetStages.includes('N3');
+        $('sleep-stimulus-n3-mode').value = protocol.n3TriggerMode;
         for (const input of document.querySelectorAll('input[name="sleep-stimulus-stage"]')) {
             input.checked = protocol.targetStages.includes(input.value);
         }
-        $('sleep-stimulus-n3-mode').value = protocol.n3TriggerMode;
         $('sleep-stimulus-n3-probability').value = String(Math.round(protocol.minN3Probability * 100));
+        $('sleep-stimulus-n3-confidence').value = String(Math.round(protocol.minN3Confidence * 100));
         $('sleep-stimulus-confidence').value = String(Math.round(protocol.minConfidence * 100));
         $('sleep-stimulus-consecutive').value = String(protocol.consecutiveEpochs);
         $('sleep-stimulus-channel').value = String(protocol.lightChannel);
@@ -437,13 +675,11 @@
         $('sleep-stimulus-duration').value = String(protocol.durationSeconds);
         $('sleep-stimulus-cooldown').value = String(protocol.cooldownMinutes);
         $('sleep-stimulus-shadow-mode').checked = protocol.shadowMode;
-        const triggerMode = protocol.n3TriggerMode === 'probability'
-            ? `N3 概率 ≥ ${Math.round(protocol.minN3Probability * 100)}%`
-            : 'N3 保守确认';
-        const controlMode = Core.STIMULUS_CONTROL_MODE_LABELS[state.stimulusControlMode] || Core.STIMULUS_CONTROL_MODE_LABELS.manual;
+        renderSleepStimulusTriggerFields(protocol);
         $('sleep-stimulus-mode').textContent = `${protocol.shadowMode
-            ? `验证模式：仅记录命中，不发光 · ${triggerMode}`
-            : `主动模式：允许向设备发送发光命令 · ${triggerMode}`} · 控制方式：${controlMode}`;
+            ? `验证模式：仅记录命中，不发光 · ${sleepStimulusTriggerSummary(protocol)}`
+            : `主动模式：允许向设备发送发光命令 · ${sleepStimulusTriggerSummary(protocol)}`} · 其他分期为实验性设置；中心/YASA 只复核`;
+        renderStimulusModeCard();
         if (!protocol.enabled) setSleepStimulusStatus('未启用');
     }
 
@@ -455,7 +691,7 @@
         const errors = Sleep.validateStimulusProtocol(protocol);
         if (errors.length) throw new Error(errors.join('；'));
         state.sleepStimulusProtocol = Sleep.normalizeStimulusProtocol(protocol);
-            state.sleepStimulusGate.updateProtocol(state.sleepStimulusProtocol);
+        state.sleepStimulusGate.updateProtocol(state.sleepStimulusProtocol);
         saveSleepStimulusProtocol(state.sleepStimulusProtocol);
         renderSleepStimulusProtocol();
         return state.sleepStimulusProtocol;
@@ -472,12 +708,33 @@
         if ($('sleep-stimulus-enabled')) $('sleep-stimulus-enabled').checked = false;
         setSleepStimulusStatus(`未启用${reason ? ` · ${reason}` : ''}`);
         if (stopActive && activeChannel && state.connected) {
-            await stopLight(activeChannel, { source: 'sleep_stage', reason, quiet: true });
+            await withLightLease(() => stopLight(activeChannel, { source: 'sleep_stage', reason, quiet: true }));
         }
         if (wasEnabled || activeChannel) await audit('sleep_stimulus_disabled', { reason, activeChannel });
     }
 
+    // A manual or scheduled light action may take the hardware lease from an
+    // active model pulse, but it must not silently disable the saved model
+    // protocol. The next eligible causal epoch can use it again.
+    async function preemptSleepStimulus(reason) {
+        const activeChannel = state.sleepStimulusActiveChannel;
+        if (!activeChannel) return;
+        if (state.sleepStimulusStopTimer) clearTimeout(state.sleepStimulusStopTimer);
+        state.sleepStimulusStopTimer = null;
+        state.sleepStimulusActiveChannel = null;
+        state.sleepStimulusGate?.cancelTrigger();
+        if (state.connected) await stopLight(activeChannel, { source: 'manual_or_plan', reason, quiet: true });
+        else await audit('sleep_stimulus_stop_unconfirmed', { channel: activeChannel, reason, source: 'manual_or_plan' }, 'error');
+        setSleepStimulusStatus(`模型触发暂挂 · ${reason}`);
+        await audit('sleep_stimulus_preempted', { channel: activeChannel, reason });
+    }
+
     async function executeSleepStimulus(trigger) {
+        if (!modelStimulusSourceAvailable()) {
+            state.sleepStimulusGate?.cancelTrigger();
+            setSleepStimulusStatus('模型触发已取消 · 当前控制方式不包含模型');
+            return;
+        }
         const triggerLabel = trigger.triggerBasis === 'n3_probability'
             ? `N3 概率 ${(trigger.n3Probability * 100).toFixed(1)}%`
             : `置信度 ${(trigger.confidence * 100).toFixed(1)}%`;
@@ -485,6 +742,20 @@
             await audit('sleep_stimulus_shadow_triggered', { ...trigger, deviceCommandSent: false });
             setSleepStimulusStatus(`${trigger.stage} 验证命中 · ${triggerLabel} · 未发光`);
             addActivity(`睡眠分期 ${trigger.stage} 验证命中（shadow mode，未发光）`);
+            return;
+        }
+        return withLightLease(() => executeSleepStimulusHardware(trigger, triggerLabel));
+    }
+
+    async function executeSleepStimulusHardware(trigger, triggerLabel) {
+        if (!state.sleepStimulusProtocol.enabled || !state.connected || !state.eegRunning) {
+            state.sleepStimulusGate.cancelTrigger();
+            setSleepStimulusStatus('模型触发已取消 · 设备、EEG 或协议状态已变化');
+            return;
+        }
+        if (planEngine.getRelativeStatus() || state.lightRunning[1] || state.lightRunning[2]) {
+            state.sleepStimulusGate.cancelTrigger();
+            setSleepStimulusStatus('模型触发已暂停 · 手动或方案光刺激正在运行');
             return;
         }
         const channel = trigger.lightChannel;
@@ -512,19 +783,19 @@
             state.sleepStimulusStopTimer = null;
             if (state.sleepStimulusActiveChannel !== channel) return;
             state.sleepStimulusActiveChannel = null;
-            void runUiTask(async () => {
+            void runUiTask(() => withLightLease(async () => {
                 if (state.connected) await stopLight(channel, { source: 'sleep_stage', reason: 'duration_elapsed', quiet: true });
                 else await audit('sleep_stimulus_stop_unconfirmed', { channel, reason: 'ble_disconnected' }, 'error');
                 setSleepStimulusStatus(`冷却中 · ${trigger.cooldownMinutes} 分钟`);
                 await audit('sleep_stimulus_completed', { channel, epochIndex: trigger.epochIndex, stage: trigger.stage });
-            });
+            }));
         }, trigger.durationMs);
     }
 
     async function handleSleepStimulusResult(item) {
         if (!state.sleepStimulusGate || !state.sleepStimulusProtocol.enabled) return;
-        if (!Core.stimulusControlModeAllows(state.stimulusControlMode, 'model')) {
-            setSleepStimulusStatus('已启用 · 当前控制方式不允许模型触发');
+        if (!modelStimulusSourceAvailable()) {
+            setSleepStimulusStatus('模型触发未开放 · 当前控制方式不包含模型');
             return;
         }
         if (!state.connected || !state.eegRunning) {
@@ -792,6 +1063,9 @@
         } : { center: null, causal: null };
         state.sleepStimulusGate = new Sleep.SleepStageStimulusGate(state.sleepStimulusProtocol);
         renderSleepStimulusProtocol();
+        for (const input of document.querySelectorAll('input[name="sleep-stimulus-stage"]')) {
+            input.addEventListener('change', () => renderSleepStimulusTriggerFields());
+        }
         $('realtime-enabled').checked = state.realtimeEnabled;
         $('realtime-enabled').addEventListener('change', event => {
             state.realtimeEnabled = event.target.checked;
@@ -1183,6 +1457,16 @@
         return new Promise(resolve => setTimeout(resolve, milliseconds));
     }
 
+    // Serialize the complete configure/start/stop transaction for each light
+    // source. A state check alone is not atomic when a model result and a
+    // manual/plan action arrive in the same event loop turn.
+    function withLightLease(task) {
+        const previous = state.lightLeasePromise;
+        let release;
+        state.lightLeasePromise = new Promise(resolve => { release = resolve; });
+        return previous.catch(() => {}).then(task).finally(() => release());
+    }
+
     function lightContext(context = {}) {
         return {
             source: context.source || 'manual',
@@ -1305,11 +1589,14 @@
             await audit('safe_stop_incomplete', { reason, error: '设备未连接，无法确认硬件最终状态' }, 'error');
             return;
         }
-        const failures = [];
-        for (const channel of [1, 2]) {
-            try { await stopLight(channel, { source: 'safe_stop', reason, quiet: true }); }
-            catch (error) { failures.push({ channel, error: error.message }); logProtocol('ERR', `停止光刺激 CH${channel}：${error.message}`, 'error'); }
-        }
+        const failures = await withLightLease(async () => {
+            const output = [];
+            for (const channel of [1, 2]) {
+                try { await stopLight(channel, { source: 'safe_stop', reason, quiet: true }); }
+                catch (error) { output.push({ channel, error: error.message }); logProtocol('ERR', `停止光刺激 CH${channel}：${error.message}`, 'error'); }
+            }
+            return output;
+        });
         try { await requireClient().stopEeg(); } catch (error) { logProtocol('ERR', `停止 EEG：${error.message}`, 'error'); }
         state.eegRunning = false;
         state.impedanceMode = false;
@@ -1343,7 +1630,7 @@
             deviceId: state.deviceInfo?.deviceId ? Core.bytesToHex(state.deviceInfo.deviceId) : (state.transport?.id || ''),
             selectedChannel: state.selectedChannel,
             sampleRateHz: 250,
-            appVersion: '0.3.1',
+            appVersion: '0.4.0',
         });
         updateEegUi();
         return state.activeSession;
@@ -1432,14 +1719,21 @@
         case 'eeg_start': await startEeg({ channel, plan }); break;
         case 'eeg_stop': await stopEeg(`plan:${plan.id}`); break;
         case 'light_start':
-            if (!Core.stimulusControlModeAllows(state.stimulusControlMode, 'manual')) {
-                throw new Error('当前控制方式为模型判别，时间方案光刺激未执行；请切换为“手动 / 方案”或“两者都可”');
-            }
-            await disableSleepStimulus('时间方案刺激开始');
-            await configureLight(action.lightChannel || 1, action.light, context);
-            await startLight(action.lightChannel || 1, context);
+        case 'light_stop':
+            if (!manualStimulusSourceAvailable()) throw new Error('当前控制方式不包含手动 / 方案光刺激');
+            await withLightLease(async () => {
+                if (action.type === 'light_start') {
+                    await preemptSleepStimulus('时间方案刺激开始');
+                    if (state.lightRunning[1] || state.lightRunning[2]) throw new Error('已有光刺激运行，方案动作未启动');
+                    await configureLight(action.lightChannel || 1, action.light, context);
+                    await startLight(action.lightChannel || 1, context);
+                } else if (state.sleepStimulusActiveChannel === (action.lightChannel || 1)) {
+                    await preemptSleepStimulus('时间方案停止刺激');
+                } else {
+                    await stopLight(action.lightChannel || 1, context);
+                }
+            });
             break;
-        case 'light_stop': await stopLight(action.lightChannel || 1, context); break;
         case 'status_query': await queryStatus(); break;
         default: throw new Error(`未知方案动作：${action.type}`);
         }
@@ -1584,7 +1878,6 @@
         $('relative-plan-toggle').disabled = relativeRun ? false : (!state.connected || selectablePlans.length === 0);
         $('relative-plan-toggle').textContent = relativeRun ? '停止方案' : '立即运行';
         $('relative-plan-toggle').className = `button ${relativeRun ? 'danger' : 'success'}`;
-        updateHomePlanControls();
 
         const operation = Core.deviceOperationPresentation({
             connected: state.connected,
@@ -1596,7 +1889,10 @@
             pending: state.lightStatePending,
         });
         const currentAction = planEngine.getCurrentAction();
-        const actionLabel = action => ACTION_LABELS[action?.type] || action?.type || '方案动作';
+        const manualLightAllowed = manualStimulusSourceAvailable();
+        const actionLabel = action => {
+            return ACTION_LABELS[action?.type] || action?.type || '方案动作';
+        };
         const dailySource = plan => `每日方案「${plan.name}」`;
         const runSource = plan => {
             const sourcePlan = state.plans.find(item => item.id === relativeRun?.planId);
@@ -1617,7 +1913,9 @@
         }
 
         const candidates = state.plans.filter(plan => plan.enabled && plan.mode !== 'relative').flatMap(plan =>
-            (plan.actions || []).map(action => ({ plan, action, date: nextDateForTime(action.time) })));
+            (plan.actions || [])
+                .filter(action => manualLightAllowed || (action.type !== 'light_start' && action.type !== 'light_stop'))
+                .map(action => ({ plan, action, date: nextDateForTime(action.time) })));
         candidates.sort((a, b) => a.date - b.date);
         const next = candidates[0];
         if (currentAction || operationIsActive) {
@@ -1629,16 +1927,6 @@
                 ? `<span class="time">下次执行 · ${escapeHtml(formatScheduledDateTime(next.date))}</span><strong>${escapeHtml(actionLabel(next.action))}</strong><small>来源：${escapeHtml(dailySource(next.plan))} · CH${next.plan.eegChannel} · 当前设备：${escapeHtml(operation.label)}</small>`
                 : '<span class="time">暂无下次执行</span><strong>没有启用的每日定时方案</strong><small>“立即运行选择”只用于马上启动，不会改变每日调度</small>';
         }
-    }
-
-    function updateHomePlanControls() {
-        const editButton = $('edit-plan-button-home');
-        const select = $('relative-plan-select');
-        if (!editButton || !select) return;
-        const selectedPlan = state.plans.find(plan => plan.id === select.value);
-        const running = planEngine.getRelativeStatus();
-        editButton.disabled = !selectedPlan || Boolean(running);
-        editButton.title = selectedPlan ? `编辑 ${selectedPlan.name}` : '请先选择方案';
     }
 
     function renderPlans() {
@@ -1679,6 +1967,7 @@
     }
 
     function openPlanDialog(plan = null) {
+        $('plan-manager-dialog')?.close();
         state.planEditingMode = plan?.mode === 'relative' ? 'relative' : 'clock';
         $('plan-id').value = plan?.id || '';
         $('plan-name').value = plan?.name || '';
@@ -1931,19 +2220,24 @@
         $('status-button').addEventListener('click', () => runUiTask(queryStatus));
         $('safe-stop-button').addEventListener('click', () => runUiTask(() => safeStop('manual')));
         $('relative-plan-toggle').addEventListener('click', () => runUiTask(toggleRelativePlan));
-        $('relative-plan-select').addEventListener('change', updateHomePlanControls);
         $('new-plan-button').addEventListener('click', () => openPlanDialog());
-        $('new-plan-button-home').addEventListener('click', () => openPlanDialog());
-        $('edit-plan-button-home').addEventListener('click', () => {
-            const plan = state.plans.find(item => item.id === $('relative-plan-select').value);
-            if (plan) openPlanDialog(plan);
+        $('stimulus-control-mode').addEventListener('change', event => runUiTask(() => changeStimulusControlMode(event.target.value)));
+        $('stimulus-open-settings').addEventListener('click', () => openStimulusSettingsForMode());
+        $('manual-stimulus-settings-close').addEventListener('click', () => $('manual-stimulus-settings-dialog').close());
+        $('manual-stimulus-settings-dialog').addEventListener('click', event => {
+            if (event.target === event.currentTarget) event.currentTarget.close();
         });
-        $('manage-plan-button-home').addEventListener('click', () => {
-            const manager = $('home-plan-manager');
-            if (!manager) return;
-            manager.open = true;
-            manager.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        $('manual-open-plan-manager').addEventListener('click', openHomePlanManager);
+        $('plan-manager-dialog-close').addEventListener('click', () => $('plan-manager-dialog').close());
+        $('plan-manager-dialog').addEventListener('click', event => {
+            if (event.target === event.currentTarget) event.currentTarget.close();
         });
+        $('combined-stimulus-settings-close').addEventListener('click', () => $('combined-stimulus-settings-dialog').close());
+        $('combined-stimulus-settings-dialog').addEventListener('click', event => {
+            if (event.target === event.currentTarget) event.currentTarget.close();
+        });
+        $('combined-model-settings').addEventListener('click', openSleepStimulusSettings);
+        $('combined-manual-settings').addEventListener('click', openManualStimulusSettings);
         $('plan-dialog-close').addEventListener('click', closePlanDialog);
         $('plan-dialog-cancel').addEventListener('click', closePlanDialog);
         $('plan-dialog').addEventListener('close', resetPlanDialogState);
@@ -2075,20 +2369,12 @@
         $('read-registers-button').addEventListener('click', () => runUiTask(readRegisters));
         $('apply-normal-config-button').addEventListener('click', () => runUiTask(() => applyChannel(Number($('debug-channel').value), false)));
         $('apply-impedance-config-button').addEventListener('click', () => runUiTask(() => applyChannel(Number($('debug-channel').value), true)));
-        $('stimulus-control-mode').addEventListener('change', event => runUiTask(async () => {
-            const previousMode = state.stimulusControlMode;
-            const mode = Core.normalizeStimulusControlMode(event.target.value);
-            state.stimulusControlMode = mode;
-            localStorage.setItem('stimulusControlMode', mode);
-            renderStimulusControlMode();
-            renderSleepStimulusProtocol();
-            if (mode === 'manual' && previousMode !== 'manual'
-                && (state.sleepStimulusProtocol.enabled || state.sleepStimulusActiveChannel)) {
-                await disableSleepStimulus('切换至手动 / 方案模式');
-            }
-            addActivity(`光刺激控制方式：${Core.STIMULUS_CONTROL_MODE_LABELS[mode]}`);
-            await audit('stimulus_control_mode_changed', { mode, previousMode });
-        }));
+        $('sleep-stimulus-settings-close').addEventListener('click', () => $('sleep-stimulus-settings-dialog').close());
+        $('sleep-stimulus-settings-dialog').addEventListener('click', event => {
+            if (event.target === event.currentTarget) event.currentTarget.close();
+        });
+        $('sleep-stimulus-n3-enabled').addEventListener('change', () => renderSleepStimulusTriggerFields());
+        $('sleep-stimulus-n3-mode').addEventListener('change', () => renderSleepStimulusTriggerFields());
         $('home-light-start').addEventListener('click', () => runUiTask(() => startManualLight(2, homeLightConfigFromInputs(), { source: 'manual_home' })));
         $('home-light-stop').addEventListener('click', () => runUiTask(() => stopManualLight(2, { source: 'manual_home', reason: 'home_manual_stop' })));
         $('light-config-button').addEventListener('click', () => runUiTask(() => configureLight(Number($('light-channel').value), lightConfigFromInputs(), { source: 'manual_debug' })));
@@ -2133,22 +2419,26 @@
     }
 
     async function startManualLight(channel, config = null, context = {}) {
-        if (!Core.stimulusControlModeAllows(state.stimulusControlMode, 'manual')) {
-            throw new Error('当前控制方式为模型判别，请切换为“手动 / 方案”或“两者都可”');
-        }
-        requireClient();
-        if (state.lightRunning[1] || state.lightRunning[2]) throw new Error('已有光刺激运行，请先停止后再启动');
-        const normalizedConfig = config ? validateManualLightConfig(config) : null;
-        if (normalizedConfig) await configureLight(channel, normalizedConfig, context);
-        await startLight(channel, context);
+        return withLightLease(async () => {
+            if (!manualStimulusSourceAvailable()) throw new Error('当前控制方式不包含手动 / 方案光刺激');
+            requireClient();
+            if (state.sleepStimulusActiveChannel) await preemptSleepStimulus('手动刺激请求');
+            if (state.lightRunning[1] || state.lightRunning[2]) throw new Error('已有光刺激运行，请先停止后再启动');
+            const normalizedConfig = config ? validateManualLightConfig(config) : null;
+            if (normalizedConfig) await configureLight(channel, normalizedConfig, context);
+            await startLight(channel, context);
+        });
     }
 
     async function stopManualLight(channel, context = {}) {
-        requireClient();
-        if (state.sleepStimulusActiveChannel === channel) {
-            await disableSleepStimulus('手动停止', false);
-        }
-        await stopLight(channel, context);
+        return withLightLease(async () => {
+            requireClient();
+            if (state.sleepStimulusActiveChannel === channel) {
+                await preemptSleepStimulus('手动停止');
+                return;
+            }
+            await stopLight(channel, context);
+        });
     }
 
     async function runUiTask(task) {
@@ -2275,7 +2565,7 @@
     }
 
     async function runDeviceDiagnostic() {
-        const report = { startedAt: Core.formatLocalIso(), appVersion: '0.3.1', sdkVersion: SDK.VERSION, success: false };
+        const report = { startedAt: Core.formatLocalIso(), appVersion: '0.4.0', sdkVersion: SDK.VERSION, success: false };
         try {
             if (!await connectBle()) throw new Error('BLE connection failed');
             report.device = {
@@ -2342,7 +2632,7 @@
             updateStreamMetricsUi();
             if (state.activeSession) updateEegUi();
         }, 500);
-        await audit('app_started', { version: '0.3.1', sdkVersion: SDK.VERSION });
+        await audit('app_started', { version: '0.4.0', sdkVersion: SDK.VERSION });
         if (window.desktopAPI.getLaunchMode() === 'device-diagnostic') {
             $('header-status').textContent = 'PRESS ANY KEY TO DIAGNOSE';
             window.addEventListener('keydown', () => runDeviceDiagnostic(), { once: true });

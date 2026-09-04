@@ -31,6 +31,8 @@
         n3TriggerMode: 'probability',
         // Temporary research starting value; not calibrated against PSG/AASM labels.
         minN3Probability: 0.85,
+        minN3Confidence: 0.8,
+        // This threshold is only for the optional non-N3 experimental targets.
         minConfidence: 0.8,
         consecutiveEpochs: 2,
         lightChannel: 1,
@@ -51,6 +53,9 @@
             targetStages,
             n3TriggerMode: source.n3TriggerMode === 'confirmed' ? 'confirmed' : 'probability',
             minN3Probability: Number(source.minN3Probability ?? DEFAULT_STIMULUS_PROTOCOL.minN3Probability),
+            // Older protocols used minConfidence for conservative N3. Migrate
+            // that value into the dedicated N3 field when needed.
+            minN3Confidence: Number(source.minN3Confidence ?? source.minConfidence ?? DEFAULT_STIMULUS_PROTOCOL.minN3Confidence),
             minConfidence: Number(source.minConfidence ?? DEFAULT_STIMULUS_PROTOCOL.minConfidence),
             consecutiveEpochs: Number(source.consecutiveEpochs ?? DEFAULT_STIMULUS_PROTOCOL.consecutiveEpochs),
             lightChannel: Number(source.lightChannel ?? DEFAULT_STIMULUS_PROTOCOL.lightChannel),
@@ -68,15 +73,27 @@
     function validateStimulusProtocol(value = {}) {
         const protocol = normalizeStimulusProtocol(value);
         const errors = [];
+        const includesN3 = protocol.targetStages.includes('N3');
+        const includesNonN3 = protocol.targetStages.some(stage => stage !== 'N3');
         if (!protocol.targetStages.length) errors.push('至少选择一个目标睡眠分期');
-        if (!(protocol.minN3Probability >= 0.5 && protocol.minN3Probability <= 1)) errors.push('N3 概率阈值必须为 50%~100%');
-        if (!(protocol.minConfidence >= 0.5 && protocol.minConfidence <= 1)) errors.push('置信度阈值必须为 50%~100%');
+        if (includesN3 && protocol.n3TriggerMode === 'probability'
+            && !(protocol.minN3Probability >= 0.5 && protocol.minN3Probability <= 1)) {
+            errors.push('N3 候选概率阈值必须为 50%~100%');
+        }
+        if (includesN3 && protocol.n3TriggerMode === 'confirmed'
+            && !(protocol.minN3Confidence >= 0.5 && protocol.minN3Confidence <= 1)) {
+            errors.push('N3 保守确认置信度必须为 50%~100%');
+        }
+        if (includesNonN3
+            && !(protocol.minConfidence >= 0.5 && protocol.minConfidence <= 1)) {
+            errors.push('其他分期置信度必须为 50%~100%');
+        }
         if (!integerInRange(protocol.consecutiveEpochs, 1, 10)) errors.push('连续命中次数必须为 1~10');
         if (![1, 2].includes(protocol.lightChannel)) errors.push('光刺激通道必须为 1 或 2');
         if (!integerInRange(protocol.frequencyHz, 1, 100)) errors.push('光刺激频率必须为 1~100Hz');
         if (!integerInRange(protocol.powerPercent, 0, 100)) errors.push('光刺激功率必须为 0~100%');
-        if (!integerInRange(protocol.durationSeconds, 1, 3600)) errors.push('单次刺激时长必须为 1~3600 秒');
-        if (!integerInRange(protocol.cooldownMinutes, 1, 1440)) errors.push('冷却时间必须为 1~1440 分钟');
+        if (!integerInRange(protocol.durationSeconds, 1, 3600)) errors.push('刺激时长必须为 1~3600 秒');
+        if (!integerInRange(protocol.cooldownMinutes, 1, 1440)) errors.push('两次自动触发最短间隔必须为 1~1440 分钟');
         return errors;
     }
 
@@ -203,7 +220,10 @@
             const confidence = useN3Probability
                 ? Number(result.candidateConfidence ?? result.confidence)
                 : Number(result.confidence);
-            const threshold = useN3Probability ? this.protocol.minN3Probability : this.protocol.minConfidence;
+            const threshold = useN3Probability
+                ? this.protocol.minN3Probability
+                : (stage === 'N3' && this.protocol.n3TriggerMode === 'confirmed'
+                    ? this.protocol.minN3Confidence : this.protocol.minConfidence);
             if (!Number.isFinite(confidence) || confidence < threshold) return this.reject('low_confidence');
             // Scoring/reporting keeps the conservative N3 postprocessor. The
             // probability trigger intentionally does not wait for that separate

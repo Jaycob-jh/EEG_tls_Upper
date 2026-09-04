@@ -1,7 +1,7 @@
 {
   "name": "brainlume-desktop",
   "productName": "曹操",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "BrainLume CH2 EEG and light-stimulation desktop controller",
   "main": "main.js",
   "private": true,
