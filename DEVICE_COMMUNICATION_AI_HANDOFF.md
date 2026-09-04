@@ -5,7 +5,7 @@
 | 文档用途 | 交给另一台电脑上的 AI，直接继续桌面上位机开发、修复和实机调试 |
 | 设备 | BrainLume2.0C |
 | 桌面工程 | `D:\AilongProject\EEG_tls_Upper` |
-| 桌面版本 | `0.4.0` |
+| 桌面版本 | `0.4.1`（本地候选版本，待确认后发布） |
 | SDK | BrainLume JavaScript SDK `1.0.3` |
 | 固件工程 | `D:\AilongProject\brainlume2.0c_embedded_code\Software\brainlume2.0c_embedded_code` |
 | 总线协议 | ActionBus `3.0` |

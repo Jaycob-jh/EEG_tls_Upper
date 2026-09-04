@@ -322,7 +322,7 @@
             model: {
                 title: labels.model,
                 description: '只允许当前因果模型候选进入实时触发。',
-                summary: `N3 · ${sleepStimulusTriggerSummary(protocol)}`,
+                summary: sleepStimulusTriggerSummary(protocol),
                 button: '设置模型触发',
                 status: modelStatus,
             },
@@ -364,7 +364,7 @@
                 : '只配置实时模型；手动 / 方案在独立弹窗中配置';
         }
         const combinedModelSummary = $('combined-model-summary');
-        if (combinedModelSummary) combinedModelSummary.textContent = `N3：${modelStatus} · ${sleepStimulusTriggerSummary(protocol)}`;
+        if (combinedModelSummary) combinedModelSummary.textContent = `${modelStatus} · ${sleepStimulusTriggerSummary(protocol)}`;
         const combinedManualSummary = $('combined-manual-summary');
         if (combinedManualSummary) combinedManualSummary.textContent = manualAllowed
             ? '手动按钮和已保存方案可用，参数在手动 / 方案设置中管理。'
@@ -577,7 +577,7 @@
             n3TriggerMode: $('sleep-stimulus-n3-mode')?.value || 'probability',
             minN3Probability: Number($('sleep-stimulus-n3-probability').value) / 100,
             minN3Confidence: Number($('sleep-stimulus-n3-confidence').value) / 100,
-            minConfidence: Number($('sleep-stimulus-confidence').value) / 100,
+            minConfidence: Number($('sleep-stimulus-other-confidence').value) / 100,
             consecutiveEpochs: Number($('sleep-stimulus-consecutive').value),
             lightChannel: Number($('sleep-stimulus-channel').value),
             frequencyHz: Number($('sleep-stimulus-frequency').value),
@@ -630,14 +630,14 @@
         setElementVisibility('sleep-stimulus-n3-mode-field', includesN3);
         setElementVisibility('sleep-stimulus-n3-probability-field', includesN3 && n3TriggerMode === 'probability');
         setElementVisibility('sleep-stimulus-n3-confidence-field', n3ConfidenceVisible);
-        setElementVisibility('sleep-stimulus-confidence-field', otherConfidenceVisible);
+        setElementVisibility('sleep-stimulus-other-confidence-field', otherConfidenceVisible);
         const modeHelp = $('sleep-stimulus-n3-mode-help');
         if (modeHelp) {
             modeHelp.textContent = n3TriggerMode === 'confirmed'
                 ? '先由独立 N3 后处理确认，再按置信度和连续命中判断；反应可能更慢。'
                 : '直接使用当前因果候选的 N3 概率判断，响应更快；属于研究性闭环。';
         }
-        const confidenceHelp = $('sleep-stimulus-confidence-help');
+        const confidenceHelp = $('sleep-stimulus-other-confidence-help');
         if (confidenceHelp) {
             confidenceHelp.textContent = nonN3Stages.length
                 ? `仅用于 ${nonN3Stages.join('、')}；N3 使用默认区域的专用阈值。`
@@ -667,7 +667,7 @@
         }
         $('sleep-stimulus-n3-probability').value = String(Math.round(protocol.minN3Probability * 100));
         $('sleep-stimulus-n3-confidence').value = String(Math.round(protocol.minN3Confidence * 100));
-        $('sleep-stimulus-confidence').value = String(Math.round(protocol.minConfidence * 100));
+        $('sleep-stimulus-other-confidence').value = String(Math.round(protocol.minConfidence * 100));
         $('sleep-stimulus-consecutive').value = String(protocol.consecutiveEpochs);
         $('sleep-stimulus-channel').value = String(protocol.lightChannel);
         $('sleep-stimulus-frequency').value = String(protocol.frequencyHz);
@@ -1630,7 +1630,7 @@
             deviceId: state.deviceInfo?.deviceId ? Core.bytesToHex(state.deviceInfo.deviceId) : (state.transport?.id || ''),
             selectedChannel: state.selectedChannel,
             sampleRateHz: 250,
-            appVersion: '0.4.0',
+            appVersion: '0.4.1',
         });
         updateEegUi();
         return state.activeSession;
@@ -2565,7 +2565,7 @@
     }
 
     async function runDeviceDiagnostic() {
-        const report = { startedAt: Core.formatLocalIso(), appVersion: '0.4.0', sdkVersion: SDK.VERSION, success: false };
+        const report = { startedAt: Core.formatLocalIso(), appVersion: '0.4.1', sdkVersion: SDK.VERSION, success: false };
         try {
             if (!await connectBle()) throw new Error('BLE connection failed');
             report.device = {
@@ -2632,7 +2632,7 @@
             updateStreamMetricsUi();
             if (state.activeSession) updateEegUi();
         }, 500);
-        await audit('app_started', { version: '0.4.0', sdkVersion: SDK.VERSION });
+        await audit('app_started', { version: '0.4.1', sdkVersion: SDK.VERSION });
         if (window.desktopAPI.getLaunchMode() === 'device-diagnostic') {
             $('header-status').textContent = 'PRESS ANY KEY TO DIAGNOSE';
             window.addEventListener('keydown', () => runDeviceDiagnostic(), { once: true });

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>曹操 v0.4.0</title>
+    <title>曹操 v0.4.1</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -106,7 +106,7 @@
 
             <section class="page" id="page-realtime">
                 <div class="section-heading page-heading">
-                    <div><p class="eyebrow">REALTIME EEG & SLEEP STAGING</p><h2>实时分期</h2><small class="page-heading-note">这里只看实时 EEG、分期概率和历史；N3 触发参数请在设备首页设置</small></div>
+                    <div><p class="eyebrow">REALTIME EEG & SLEEP STAGING</p><h2>实时分期</h2><small class="page-heading-note">这里只看实时 EEG、分期概率和历史；分期触发参数请在设备首页设置</small></div>
                     <label class="realtime-enable"><input type="checkbox" id="realtime-enabled" checked> 启用实时分析</label>
                 </div>
                 <div class="notice analysis-disclaimer">研究用途。模型固定接收 21 个 epoch（每个 30 秒）：当前因果候选从首个 epoch 开始显示，收满约 10.5 分钟且整段质量通过后才具备实验性闭环资格；训练一致的中心输出约延迟 5 分钟，仅用于回顾性验证。默认验证模式只记录命中，不发光；结果不构成医疗诊断。</div>
@@ -134,7 +134,7 @@
                     </section>
                 </div>
                 <section class="analysis-section realtime-history-section">
-                    <div class="section-heading compact"><div><p class="eyebrow">STAGING HISTORY · READ ONLY</p><h3>实时分期记录</h3><small class="page-heading-note">当前因果结果可参与 N3 触发；此处历史记录只读</small></div></div>
+                    <div class="section-heading compact"><div><p class="eyebrow">STAGING HISTORY · READ ONLY</p><h3>实时分期记录</h3><small class="page-heading-note">当前因果结果可参与分期候选触发；此处历史记录只读</small></div></div>
                     <div class="analysis-table-wrap"><table class="analysis-table"><thead><tr><th>输出时间</th><th>对应 epoch</th><th>分期</th><th>模型概率</th><th>质量</th><th>光刺激</th><th>W</th><th>N1</th><th>N2</th><th>N3</th><th>REM</th></tr></thead><tbody id="realtime-history"><tr><td colspan="11">尚无分期结果</td></tr></tbody></table></div>
                 </section>
             </section>
@@ -309,7 +309,7 @@
     <dialog id="sleep-stimulus-settings-dialog" class="modal sleep-stimulus-settings-modal" aria-labelledby="sleep-stimulus-settings-title">
         <div class="modal-content sleep-stimulus-settings-content">
             <div class="section-heading compact sleep-stimulus-dialog-heading">
-                <div><p class="eyebrow">MODEL TRIGGER SETTINGS</p><h2 id="sleep-stimulus-settings-title">N3 实时触发设置</h2><small id="sleep-stimulus-dialog-mode">只配置实时模型；手动 / 方案刺激在设备首页独立管理</small></div>
+                <div><p class="eyebrow">MODEL TRIGGER SETTINGS</p><h2 id="sleep-stimulus-settings-title">睡眠分期实时触发设置</h2><small id="sleep-stimulus-dialog-mode">只配置实时模型；手动 / 方案刺激在设备首页独立管理</small></div>
                 <div class="sleep-stimulus-dialog-actions">
                     <label class="realtime-enable"><input type="checkbox" id="sleep-stimulus-enabled"> 启用自动触发</label>
                     <button type="button" class="icon-button" id="sleep-stimulus-settings-close" aria-label="关闭模型设置">×</button>
@@ -317,25 +317,25 @@
             </div>
             <div id="sleep-stimulus-config">
                 <div class="sleep-stimulus-warning">
-                    <strong>N3 实时触发：默认验证模式（只记录命中，不发光）。</strong>
-                    <span id="sleep-stimulus-trigger-summary">默认只对当前因果模型候选执行质量、概率和连续稳定门控；必须收满 21 个 epoch、上下文与信号质量通过、且设备状态已确认。</span>
+                    <strong>睡眠分期候选触发：默认验证模式（只记录命中，不发光）。</strong>
+                    <span id="sleep-stimulus-trigger-summary">默认只对实时模型候选执行质量、概率和连续稳定门控；必须收满 21 个 epoch、上下文与信号质量通过、且设备状态已确认。</span>
                     <details class="sleep-stimulus-more"><summary>查看触发条件与安全边界</summary><p>实时触发只接受当前因果输出；中心回顾输出和离线 YASA 结果永远不会触发光刺激。实时质量门控使用模型滤波后的 500 µV 临时研究性门限，不直接用原始 EDF 数值判定，也不会根据未标注数据自动改阈值。1 个 epoch 约 30 秒；点击“全部停止”、停止 EEG、关闭实时分析或 BLE 断开都会解除协议，应用重新启动后需要再次启用。完成 PSG/人工标签校准前，不建议关闭验证模式。</p></details>
                 </div>
                 <div class="sleep-stimulus-form">
                     <fieldset class="sleep-stimulus-group sleep-stimulus-primary-group">
                         <legend>N3 实时触发（默认）</legend>
                         <div class="sleep-stimulus-primary-grid">
-                            <label class="sleep-stage-fixed"><span>目标分期</span><strong><input type="checkbox" id="sleep-stimulus-n3-enabled" checked> N3</strong><small class="sleep-stimulus-field-help">只使用当前因果模型候选，不等待中心/离线结果。</small></label>
+                            <label class="sleep-stage-fixed"><span>目标分期</span><strong><input type="checkbox" id="sleep-stimulus-n3-enabled" checked> N3</strong><small class="sleep-stimulus-field-help">只使用实时模型候选，不等待中心/离线结果。</small></label>
                             <label id="sleep-stimulus-n3-mode-field">N3 触发依据<select id="sleep-stimulus-n3-mode"><option value="probability">实时候选概率达到阈值（响应快，研究性）</option><option value="confirmed">保守后处理确认（更稳健，可能延迟）</option></select><small class="sleep-stimulus-field-help" id="sleep-stimulus-n3-mode-help">默认按当前因果候选的 N3 概率判断；不使用中心或离线输出。</small></label>
                             <label id="sleep-stimulus-n3-probability-field" title="这是触发条件，不是当前 epoch 的实际 N3 概率">N3 触发概率阈值 (%)<input id="sleep-stimulus-n3-probability" type="number" min="50" max="100" step="1" value="" placeholder="读取中"><small class="sleep-stimulus-field-help">仅在“实时候选概率达到阈值”时使用；不是当前 epoch 的实际概率显示。</small></label>
                             <label id="sleep-stimulus-n3-confidence-field">N3 保守确认置信度 (%)<input id="sleep-stimulus-n3-confidence" type="number" min="50" max="100" step="1" value="80"><small class="sleep-stimulus-field-help">仅在“保守后处理确认”时使用；要求 N3 先通过独立后处理。</small></label>
                             <label>连续命中（epoch）<input id="sleep-stimulus-consecutive" type="number" min="1" max="10" step="1" value="2"><small class="sleep-stimulus-field-help">每个 epoch 30 秒；2 个表示连续约 60 秒。</small></label>
                         </div>
                     </fieldset>
-                    <details class="sleep-stimulus-advanced" id="sleep-stimulus-advanced-other-stages">
-                        <summary>高级设置：其他分期实验触发</summary>
+                    <details class="sleep-stimulus-advanced" id="sleep-stimulus-advanced-other-stages" open>
+                        <summary>其他睡眠分期候选刺激（实验设置）</summary>
                         <div class="sleep-stimulus-advanced-body">
-                            <p>仅用于实验比较；不会改变 N3 默认规则。其他分期使用各自的实时模型候选和通用置信度门控，不使用 N3 阈值。</p>
+                            <p>W、N1、N2、REM 可多选作为候选目标；仅使用当前因果模型候选和通用置信度门控，不使用 N3 专用阈值。中心回顾与离线 YASA 结果不会触发刺激。</p>
                             <fieldset class="sleep-stimulus-group">
                                 <legend>实验目标（可多选）</legend>
                                 <div class="sleep-stage-selector">
@@ -344,7 +344,7 @@
                                     <label><input type="checkbox" name="sleep-stimulus-stage" value="N2"> N2</label>
                                     <label><input type="checkbox" name="sleep-stimulus-stage" value="REM"> REM</label>
                                 </div>
-                                <label id="sleep-stimulus-confidence-field"><span id="sleep-stimulus-confidence-label">其他分期置信度 (%)</span><input id="sleep-stimulus-confidence" type="number" min="50" max="100" step="1" value="80"><small class="sleep-stimulus-field-help" id="sleep-stimulus-confidence-help">仅在选择其他分期后使用；N3 使用默认区域的专用阈值。</small></label>
+                                <label id="sleep-stimulus-other-confidence-field"><span id="sleep-stimulus-other-confidence-label">其他分期置信度 (%)</span><input id="sleep-stimulus-other-confidence" type="number" min="50" max="100" step="1" value="80"><small class="sleep-stimulus-field-help" id="sleep-stimulus-other-confidence-help">仅在选择其他分期后使用；N3 使用默认区域的专用阈值。</small></label>
                             </fieldset>
                         </div>
                     </details>

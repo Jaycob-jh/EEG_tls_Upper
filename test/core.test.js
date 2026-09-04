@@ -217,10 +217,12 @@ test('stimulus sources stay independent while legacy source helpers remain compa
     assert.match(html, /id="sleep-stimulus-n3-mode-field"/);
     assert.match(html, /id="sleep-stimulus-n3-probability-field"/);
     assert.match(html, /id="sleep-stimulus-n3-confidence-field"/);
-    assert.match(html, /id="sleep-stimulus-confidence-field"/);
+    assert.match(html, /id="sleep-stimulus-other-confidence-field"/);
     assert.match(html, /id="sleep-stimulus-trigger-summary"/);
     assert.match(html, /N3 实时触发/);
-    assert.match(html, /高级设置：其他分期实验触发/);
+    assert.match(html, /其他睡眠分期候选刺激（实验设置）/);
+    assert.equal((html.match(/id="sleep-stimulus-confidence-field"/g) || []).length, 0);
+    assert.equal((html.match(/id="sleep-stimulus-confidence"/g) || []).length, 0);
     assert.match(html, /手动 \/ 方案刺激/);
     assert.match(html, /中心回顾输出和离线 YASA 结果永远不会触发光刺激/);
     assert.doesNotMatch(html, /id="model-acquisition-plan-note"/);
@@ -561,7 +563,7 @@ test('realtime page exposes a 30-second sleep-stage stimulus protocol with safet
         assert.match(html, new RegExp(`name="sleep-stimulus-stage" value="${stage}"`));
     }
     assert.match(html, /id="sleep-stimulus-n3-enabled"/);
-    assert.match(html, /id="sleep-stimulus-confidence"/);
+    assert.match(html, /id="sleep-stimulus-other-confidence"/);
     assert.match(html, /id="sleep-stimulus-n3-mode"/);
     assert.match(html, /id="sleep-stimulus-n3-probability"/);
     assert.match(html, /id="sleep-stimulus-consecutive"/);
@@ -579,7 +581,7 @@ test('realtime page exposes a 30-second sleep-stage stimulus protocol with safet
     assert.match(html, /当前因果候选从首个 epoch 开始显示/);
     assert.match(html, /实时模型候选/);
     assert.match(html, /候选概率达到阈值/);
-    assert.match(html, /高级设置：其他分期实验触发/);
+    assert.match(html, /其他睡眠分期候选刺激（实验设置）/);
     assert.match(html, /sleep-stage-postprocess\.js/);
     assert.match(html, /保守后处理/);
     assert.match(app, /sleepN3Postprocessors/);
@@ -591,11 +593,11 @@ test('user-visible product name is Cao Cao while the historical data directory s
     const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
     const report = fs.readFileSync(path.join(__dirname, '..', 'src', 'analysis-report.js'), 'utf8');
     const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
-    assert.match(html, /<title>曹操 v0\.4\.0<\/title>/);
+    assert.match(html, /<title>曹操 v0\.4\.1<\/title>/);
     assert.match(html, /<strong>曹操<\/strong><span>EEG 闭环平台<\/span>/);
     assert.match(main, /title:\s*'曹操'/);
     assert.match(main, /'BrainLume Desktop'/);
-    assert.match(report, /曹操 v0\.4\.0/);
+    assert.match(report, /曹操 v0\.4\.1/);
     assert.match(readme, /^# 曹操$/m);
 });
 
