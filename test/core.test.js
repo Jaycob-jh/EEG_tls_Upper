@@ -89,6 +89,30 @@ test('firmware error codes and request context are preserved', async () => {
     });
 });
 
+test('limited F0 firmware enters compatibility discovery without blocking the client', async () => {
+    let onData;
+    const transport = {
+        onData(callback) { onData = callback; return () => { onData = null; }; },
+        isConnected: () => true,
+        async write(bytes) {
+            const request = BrainLume.protocol.parseFrame(bytes);
+            // This models the device observed in the Android trace: it answers
+            // F0 queries with the two-byte 3.0 version payload, but does not
+            // expose the optional device/action directory fields.
+            onData(BrainLume.protocol.buildFrame(request.addr, request.func, BrainLume.STAT.DEVICE_OK, [0x03, 0x00]));
+        },
+    };
+    const client = new BrainLume.BrainLumeClient({ transport, timeoutMs: 100 });
+    const info = await client.discover();
+    assert.equal(info.protocolVersion.text, '3.0');
+    assert.equal(info.deviceId, null);
+    assert.equal(info.actionCount, null);
+    assert.deepEqual(info.actions, []);
+    assert.equal(info.compatibilityMode, true);
+    assert.equal(info.capabilityDiscoveryComplete, false);
+    assert.deepEqual(info.capabilityWarnings.map(item => item.query), ['deviceId', 'actionCount', 'uptime', 'busAddress']);
+});
+
 test('ADS1299 config comparison ignores read-only lead-off status registers', () => {
     const expected = BrainLume.ads1299.createRecommendedConfig({ channels: [2] });
     const readback = Uint8Array.from([0x1E, ...expected]);
@@ -593,12 +617,45 @@ test('user-visible product name is Cao Cao while the historical data directory s
     const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
     const report = fs.readFileSync(path.join(__dirname, '..', 'src', 'analysis-report.js'), 'utf8');
     const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
-    assert.match(html, /<title>曹操 v0\.4\.1<\/title>/);
+    assert.match(html, /<title>曹操 v0\.5\.1<\/title>/);
     assert.match(html, /<strong>曹操<\/strong><span>EEG 闭环平台<\/span>/);
     assert.match(main, /title:\s*'曹操'/);
     assert.match(main, /'BrainLume Desktop'/);
-    assert.match(report, /曹操 v0\.4\.1/);
+    assert.match(report, /曹操 v0\.5\.1/);
     assert.match(readme, /^# 曹操$/m);
+});
+
+test('Android project keeps the shared CH2 BLE and EDF boundary explicit', () => {
+    const androidRoot = path.join(__dirname, '..', 'android', 'CaoCaoAndroid');
+    const manifest = fs.readFileSync(path.join(androidRoot, 'app', 'src', 'main', 'AndroidManifest.xml'), 'utf8');
+    const protocol = fs.readFileSync(path.join(androidRoot, 'app', 'src', 'main', 'java', 'com', 'brainlume', 'caocao', 'CaoCaoProtocol.java'), 'utf8');
+    const readme = fs.readFileSync(path.join(androidRoot, 'README.md'), 'utf8');
+    const analysisEngine = fs.readFileSync(path.join(androidRoot, 'app', 'src', 'main', 'java', 'com', 'brainlume', 'caocao', 'AndroidAnalysisEngine.java'), 'utf8');
+    const bridge = fs.readFileSync(path.join(androidRoot, 'app', 'src', 'main', 'java', 'com', 'brainlume', 'caocao', 'AndroidFullActivity.java'), 'utf8');
+    const fileProvider = fs.readFileSync(path.join(androidRoot, 'app', 'src', 'main', 'java', 'com', 'brainlume', 'caocao', 'AppFileProvider.java'), 'utf8');
+    assert.match(manifest, /android\.permission\.BLUETOOTH_SCAN/);
+    assert.match(manifest, /android\.permission\.BLUETOOTH_CONNECT/);
+    assert.match(protocol, /SERVICE_UUID = UUID\.fromString\("0000ABF0/);
+    assert.match(protocol, /FIXED_EEG_CHANNEL = 2/);
+    assert.match(protocol, /SAMPLE_RATE = 250/);
+    const legacyActivity = fs.readFileSync(path.join(androidRoot, 'app', 'src', 'main', 'java', 'com', 'brainlume', 'caocao', 'MainActivity.java'), 'utf8');
+    assert.match(legacyActivity, /getScanRecord\(\)/);
+    assert.match(legacyActivity, /SERVICE_UUID\.equals\(serviceUuid\.getUuid\(\)\)/);
+    assert.match(legacyActivity, /SCAN_MODE_LOW_LATENCY/);
+    assert.match(legacyActivity, /setImageResource\(R\.drawable\.cao_cao_icon\)/);
+    assert.match(readme, /完整迁移版/);
+    assert.match(readme, /Python YASA 不在 Android 内嵌运行/);
+    assert.match(analysisEngine, /class Session/);
+    assert.match(analysisEngine, /spectrogram/);
+    assert.match(analysisEngine, /PdfDocument/);
+    assert.match(bridge, /AndroidKeyStore/);
+    assert.match(bridge, /githubRequest/);
+    assert.match(bridge, /saveScreenshot/);
+    assert.match(bridge, /completeDiagnostic/);
+    assert.match(bridge, /BLE_RX_FLUSH_INTERVAL_MS = 20/);
+    assert.match(bridge, /isLikelyControlResponse/);
+    assert.match(bridge, /flushRxBatch/);
+    assert.match(fileProvider, /只允许读取共享文件/);
 });
 
 test('Cao Cao artwork is used for the app icon and animated launch screen', () => {

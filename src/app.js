@@ -1188,8 +1188,16 @@
             try {
                 state.deviceInfo = await client.discover();
                 const version = state.deviceInfo.protocolVersion;
-                $('metric-protocol').textContent = `ActionBus ${version.major}.${version.minor} · ${state.deviceInfo.actionCount} Actions`;
-                addActivity(`能力发现完成：${state.deviceInfo.actionCount} Actions`);
+                const capabilityLabel = state.deviceInfo.compatibilityMode
+                    ? '兼容模式'
+                    : `${state.deviceInfo.actionCount} Actions`;
+                $('metric-protocol').textContent = `ActionBus ${version.major}.${version.minor} · ${capabilityLabel}`;
+                if (state.deviceInfo.compatibilityMode) {
+                    addActivity('设备未提供完整能力目录，已按兼容路径继续：状态、EEG、方案和手动控制仍可测试');
+                    toast('BLE 已连接；设备能力目录不完整，已使用与 Windows 相同的兼容路径继续', 'info');
+                } else {
+                    addActivity(`能力发现完成：${state.deviceInfo.actionCount} Actions`);
+                }
             } catch (error) {
                 toast(`BLE 已连接，但能力发现失败：${error.message}`, 'error');
                 logProtocol('ERR', `发现失败：${error.message}`, 'error');
@@ -1630,7 +1638,7 @@
             deviceId: state.deviceInfo?.deviceId ? Core.bytesToHex(state.deviceInfo.deviceId) : (state.transport?.id || ''),
             selectedChannel: state.selectedChannel,
             sampleRateHz: 250,
-            appVersion: '0.4.1',
+            appVersion: '0.5.1',
         });
         updateEegUi();
         return state.activeSession;
@@ -2565,7 +2573,7 @@
     }
 
     async function runDeviceDiagnostic() {
-        const report = { startedAt: Core.formatLocalIso(), appVersion: '0.4.1', sdkVersion: SDK.VERSION, success: false };
+        const report = { startedAt: Core.formatLocalIso(), appVersion: '0.5.1', sdkVersion: SDK.VERSION, success: false };
         try {
             if (!await connectBle()) throw new Error('BLE connection failed');
             report.device = {
@@ -2574,8 +2582,13 @@
                 deviceIdHex: state.deviceInfo?.deviceId ? Core.bytesToHex(state.deviceInfo.deviceId) : null,
                 actionCount: state.deviceInfo?.actionCount,
                 actions: state.deviceInfo?.actions,
+                compatibilityMode: state.deviceInfo?.compatibilityMode,
+                capabilityDiscoveryComplete: state.deviceInfo?.capabilityDiscoveryComplete,
+                capabilityWarnings: state.deviceInfo?.capabilityWarnings,
             };
-            if (state.deviceInfo?.actionCount !== 9) throw new Error(`Expected 9 actions, got ${state.deviceInfo?.actionCount}`);
+            if (state.deviceInfo?.capabilityDiscoveryComplete && state.deviceInfo?.actionCount !== 9) {
+                throw new Error(`Expected 9 actions, got ${state.deviceInfo?.actionCount}`);
+            }
             report.statusBefore = await queryStatus();
 
             const expected = buildEegConfig(2, false);
@@ -2632,7 +2645,7 @@
             updateStreamMetricsUi();
             if (state.activeSession) updateEegUi();
         }, 500);
-        await audit('app_started', { version: '0.4.1', sdkVersion: SDK.VERSION });
+        await audit('app_started', { version: '0.5.1', sdkVersion: SDK.VERSION });
         if (window.desktopAPI.getLaunchMode() === 'device-diagnostic') {
             $('header-status').textContent = 'PRESS ANY KEY TO DIAGNOSE';
             window.addEventListener('keydown', () => runDeviceDiagnostic(), { once: true });

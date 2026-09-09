@@ -976,15 +976,70 @@
          * FE/00 是可选步骤，失败只触发 warning，仍会继续 FE/01 枚举。
          */
         async discover() {
-            const query = async (subcommand, maker) => decodeProtocolResponse(subcommand, (await this.sendCommand(maker(this.address))).data);
-            const protocolVersion = await query(PROTOCOL_QUERY.VERSION, commands.protocolVersion);
-            const deviceId = await query(PROTOCOL_QUERY.DEVICE_ID, commands.deviceId);
-            const actionCount = await query(PROTOCOL_QUERY.ACTION_COUNT, commands.actionCount);
-            const uptimeMs = await query(PROTOCOL_QUERY.UPTIME, commands.uptime);
-            const busAddress = await query(PROTOCOL_QUERY.ADDRESS, commands.busAddress);
-            let schemaVersion = null; try { const frame = await this.sendCommand(commands.actionSchema(this.address)); schemaVersion = frame.data[0] ?? null; } catch (error) { this.emit('warning', error); }
-            const actions = []; for (let index = 0; index < actionCount; index++) actions.push(decodeActionDescription((await this.sendCommand(commands.actionDescription(this.address, index))).data));
-            return { address: this.address, protocolVersion, deviceId, actionCount, uptimeMs, schemaVersion, busAddress, actions };
+            const warnings = [];
+            const reportWarning = (queryName, error, data = null) => {
+                const warning = error instanceof Error ? error : new Error(String(error));
+                warning.query = queryName;
+                if (data) warning.data = data.slice();
+                warnings.push({
+                    query: queryName,
+                    message: warning.message,
+                    data: data ? Array.from(data) : null,
+                });
+                this.emit('warning', warning);
+            };
+            // 版本响应是确认 ActionBus 帧方向和设备协议的最低要求；其余字段属于能力目录，
+            // 老固件可能只实现 F0/00，不能因为这些可选查询失败而阻断 EEG/状态/方案控制。
+            const query = async (queryName, subcommand, maker, expectedLength, required = false) => {
+                let data = null;
+                try {
+                    const frame = await this.sendCommand(maker(this.address));
+                    data = toBytes(frame.data);
+                    if (expectedLength != null && data.length !== expectedLength) {
+                        throw new ProtocolError(`${queryName} response requires ${expectedLength} bytes, got ${data.length}`);
+                    }
+                    return decodeProtocolResponse(subcommand, data);
+                } catch (error) {
+                    if (required) throw error;
+                    reportWarning(queryName, error, data);
+                    return null;
+                }
+            };
+            const protocolVersion = await query('protocolVersion', PROTOCOL_QUERY.VERSION, commands.protocolVersion, 2, true);
+            const deviceId = await query('deviceId', PROTOCOL_QUERY.DEVICE_ID, commands.deviceId, 5);
+            const actionCountValue = await query('actionCount', PROTOCOL_QUERY.ACTION_COUNT, commands.actionCount, 1);
+            const uptimeMs = await query('uptime', PROTOCOL_QUERY.UPTIME, commands.uptime, 4);
+            const busAddress = await query('busAddress', PROTOCOL_QUERY.ADDRESS, commands.busAddress, 1);
+            let schemaVersion = null;
+            if (actionCountValue != null) {
+                try {
+                    const frame = await this.sendCommand(commands.actionSchema(this.address));
+                    schemaVersion = frame.data[0] ?? null;
+                } catch (error) {
+                    reportWarning('actionSchema', error);
+                }
+            }
+            const actionCount = Number.isInteger(actionCountValue) && actionCountValue >= 0 && actionCountValue <= 32
+                ? actionCountValue : null;
+            if (actionCountValue != null && actionCount == null) {
+                reportWarning('actionCount', new ProtocolError(`Action count is outside the supported range: ${actionCountValue}`));
+            }
+            const actions = [];
+            if (actionCount != null) {
+                for (let index = 0; index < actionCount; index++) {
+                    try {
+                        actions.push(decodeActionDescription((await this.sendCommand(commands.actionDescription(this.address, index))).data));
+                    } catch (error) {
+                        reportWarning(`actionDescription[${index}]`, error);
+                        break;
+                    }
+                }
+            }
+            return {
+                address: this.address, protocolVersion, deviceId, actionCount, uptimeMs, schemaVersion, busAddress,
+                actions, compatibilityMode: warnings.length > 0, capabilityDiscoveryComplete: warnings.length === 0,
+                capabilityWarnings: warnings,
+            };
         }
         async getStatus() { return decodeStatus((await this.sendCommand(commands.status(this.address))).data); }
         startIndicator() { return this.sendCommand(commands.startIndicator(this.address)); }

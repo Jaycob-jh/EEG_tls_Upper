@@ -7,7 +7,7 @@ EEG CH2；工程调试页仍允许在 CH1~CH8 中选择测试通道。这里的 
 
 ## 当前版本
 
-- 应用版本：`0.4.1`（本地候选版本，待确认后发布）
+- 应用版本：`0.5.1`（Windows、macOS、Android 同步版本）
 - BrainLume SDK：`1.0.3`
 - 框架：Electron + 原生 HTML/CSS/JavaScript
 - 桌面平台：Windows 10/11 x64、Apple Silicon macOS arm64
@@ -21,6 +21,7 @@ EEG CH2；工程调试页仍允许在 CH1~CH8 中选择测试通道。这里的 
 - 主动关闭 BLE 设备选择框时仅记录“未选择设备”，不会误报为连接失败，也不会修改 Windows 蓝牙适配器或系统服务。
 - Windows `gatt_connect` 使用同一已选设备的 6 次有界恢复和 1 秒线性退避；PowerShell 只负责源码启动，不参与 BLE 建链。
 - `F0 + FE` 完整设备能力发现。
+- 能力发现对旧固件采用兼容路径：`F0/00` 版本响应是必需项，Device ID、Action 目录、运行时间和总线地址属于可选信息；缺失时明确显示“兼容模式”，不阻断状态、EEG、方案和手动控制。
 - 默认 CH2，可切换 CH1~CH8；切换时实际下发 `0x20`，不是只改变 UI。
 - `0x22` EEG int24 解码、原始码转 uV、`0.5~45Hz + 50Hz notch` 显示滤波。
 - 波形最多 30FPS，保留最近 5000 点；EDF 原始数据不受显示窗口限制。
@@ -45,6 +46,38 @@ EEG CH2；工程调试页仍允许在 CH1~CH8 中选择测试通道。这里的 
 - 原生“文件”菜单提供打开数据/会话/日志目录、导出当前分析报告、保存当前窗口截图和退出。
 - 工程调试页：发现、寄存器读取、配置下发、EEG 与光刺激控制、协议事件。
 - 顶部工具栏支持设备指示灯开关，使用功能码 `0x02`：开启帧为 `AA 55 01 02 11 00 CRC`，关闭帧为 `AA 55 01 02 10 00 CRC`。
+
+## Android 完整迁移
+
+Android 源工程位于 `android/CaoCaoAndroid`，与 Windows/macOS 共用页面和 CH2 双极差分
+协议边界。当前已迁入 BLE/GATT、状态和电量、EDF 采集、方案与记录、实时模型桥接、离线
+波形/频谱/时频图、PDF/JSON 报告、截图/文件分享/诊断，以及私有 GitHub EDF/events 归档。
+GitHub 令牌只保存在 Android Keystore 中；目标仓库不是私有仓库时，原始 EEG 上传会被拒绝。
+
+Android ABF1 写入会按特征属性优先使用无响应写入，并按 20 字节分片发送 ActionBus 帧；
+连接成功后启动前台保活服务，Activity/WebView 生命周期不会主动断开 GATT。该机制仍需在
+真实手机上验证不同 Android 厂商的后台策略，不能把 Debug 构建静态通过当作长时间连接验收。
+
+Android EEG 接收路径在原生侧以 20 ms 批量跨 WebView 转发，疑似 ActionBus 控制响应会优先刷新
+待转发 EEG 字节后立即交付，以避免高频 EEG 通知淹没状态查询、启停和光刺激控制响应；批量只改变
+跨桥调用次数，不丢弃或重采样原始字节。
+
+Android 端不内嵌 Python/YASA。需要 YASA 时，先从 Android 分享或导出 EDF，再在 Windows/macOS
+的 Python 环境运行 `python/yasa_offline_staging.py`；Android 的原生 Welch/STFT 结果不应标记为
+YASA 结果。Android 可使用 ONNX Runtime 在手机本机运行同一 Stage-1 推理模型；它不是
+Python/YASA，也不进行在线微调。实时模型和分期触发仍默认 Shadow Mode，真机 BLE、长时间
+采集、断连恢复、模型耗时和真实光刺激状态必须单独验收后，才考虑开放实验性闭环。
+
+打开 `android/CaoCaoAndroid` 后可直接执行：
+
+```powershell
+$env:JAVA_HOME = 'D:\Android\jdk-17'
+$env:ANDROID_SDK_ROOT = 'D:\Android\Sdk'
+.\gradlew.bat :app:assembleDebug
+```
+
+APK 输出为 `android/CaoCaoAndroid/app/build/outputs/apk/debug/app-debug.apk`。本地迁移阶段不
+提交模拟器、AVD、系统镜像、签名文件或 `build/`；需要测试时优先使用真实 Android 设备。
 
 ## 安装与运行
 
@@ -276,6 +309,18 @@ CH2 阻抗模式：
 CH2 EEG 和基础光刺激控制。最终安装包采用长期个人 Ad Hoc 流程，不上架 App Store；由于 iOS
 签名必须使用你的 Apple Developer 账号在 Apple Silicon Mac/Xcode 上完成，具体步骤见
 [`iOS/README.md`](iOS/README.md)。
+
+## Android 客户端
+
+`android/CaoCaoAndroid/` 提供 Java + Android BLE API 的 Android 客户端迁移工程，固定使用
+CH2 双极差分导联，当前已支持扫描/连接 BrainLume2.0C、状态/电量回读、CH2 EEG 启停、基础光刺激
+和 EDF 保存，并已加入曹操主视觉。它与桌面端和 iOS 端共用 ActionBus 3.0 协议。
+
+Android 客户端目前仍不包含 Windows 版的全部实时睡眠分期、YASA 离线分析、方案调度、GitHub
+归档和自动闭环功能；这些功能继续以桌面 Upper 为主，完整对齐范围见输出目录中的
+`ANDROID_FULL_PARITY_PLAN_20260909.md`。用 Android Studio 打开 `android/CaoCaoAndroid/`，或在该目录执行
+`.\gradlew.bat :app:assembleDebug` 构建 Debug APK。具体边界和运行步骤见
+[`android/CaoCaoAndroid/README.md`](android/CaoCaoAndroid/README.md)。
 
 ## 开发检查
 
