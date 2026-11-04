@@ -12,9 +12,9 @@ test('analysis page exposes the independent YASA verification entry point', () =
     const main = read('main.js');
     const preload = read('preload.js');
     assert.match(html, /id="analysis-yasa-button"/);
-    assert.match(html, /YASA 离线睡眠分期复核/);
-    assert.match(html, /YASA 离线睡眠分期复核（仅复核）/);
-    assert.match(html, /YASA 只读取记录并生成对照结果，不参与实时光刺激/);
+    assert.match(html, /重新分期结果（YASA）/);
+    assert.match(html, /重新分期（YASA）/);
+    assert.match(html, /此页不会开灯/);
     assert.match(ui, /window\.desktopAPI\.runYasaStaging/);
     assert.match(main, /ipcMain\.handle\('analysis:yasa'/);
     assert.match(preload, /runYasaStaging/);
@@ -29,11 +29,11 @@ test('analysis page exposes persisted online staging history for each selected s
     assert.match(html, /ONLINE STAGING HISTORY/);
     assert.match(html, /id="analysis-online-staging-body"/);
     assert.match(html, /id="analysis-online-staging-refresh"/);
-    assert.match(html, /采集时在线分期记录（仅复核）/);
-    assert.match(html, /中心回顾输出和实时历史在此汇总，不会从分析窗口触发光刺激/);
+    assert.match(html, /采集时的分期/);
+    assert.match(html, /读取当时保存的结果，不会重新计算/);
     assert.match(ui, /loadOnlineStagingHistory/);
-    assert.match(ui, /当前因果/);
-    assert.match(ui, /中心回顾/);
+    assert.match(ui, /实时分期/);
+    assert.match(ui, /回看约 5 分钟前/);
     assert.match(main, /ipcMain\.handle\('session:staging-history'/);
     assert.match(main, /parseSessionStagingHistory/);
     assert.match(preload, /loadSessionStagingHistory/);
@@ -49,7 +49,7 @@ test('analysis page exposes the deduplicated online EEG sleep-structure summary'
     assert.match(ui, /function renderSleepStructure/);
     assert.match(ui, /n3CandidateEpochs/);
     assert.match(ui, /n3SuppressedEpochs/);
-    assert.match(html, /不是 PSG 或 YASA 金标准/);
+    assert.match(html, /不能用于诊断/);
     assert.match(worker, /computeOnlineSleepMetrics\(recording\.events\)/);
 });
 
@@ -134,12 +134,12 @@ test('analysis completion waits for the result transfer before showing 100 perce
     assert.match(ui, /分析结果返回较慢/);
 });
 
-test('home schedule wording separates daily execution, immediate runs and manual impedance checks', () => {
+test('N3 workflow retains device checks but retires the legacy scheduler', () => {
     const html = read('src/index.html');
     const app = read('src/app.js');
-    assert.match(html, /下次执行/);
-    assert.match(html, /立即运行不会改变每日定时/);
-    assert.match(html, /手动检测阻抗/);
-    assert.match(app, /function formatScheduledDateTime/);
-    assert.match(app, /来源：\$\{escapeHtml\(dailySource\(next\.plan\)\)\}/);
+    assert.match(html, /检查电极接触/);
+    assert.match(html, /设备检查/);
+    assert.match(html, /hidden inert data-legacy-compatibility/);
+    assert.doesNotMatch(app, /planEngine\.start\(\)/);
+    assert.doesNotMatch(app, /Promise\.all\(\[loadPlans\(\)/);
 });

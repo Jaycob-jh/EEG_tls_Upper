@@ -12,6 +12,7 @@ import argparse
 import csv
 import json
 import sys
+from datetime import datetime
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -105,7 +106,7 @@ def read_realtime_stages(events_path: Path) -> dict[int, str]:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if event.get("action") != "sleep_stage_inferred":
+            if event.get("action") != "sleep_stage_inferred" or event.get('inferenceMode') != 'center':
                 continue
             try:
                 epoch_index = int(event["epochIndex"])
@@ -128,7 +129,7 @@ def run() -> int:
     csv_path = session_dir / "eeg_raw.csv"
     if not csv_path.exists():
         csv_path = session_dir / "eeg_raw.csv.partial"
-    if not edf_path.exists() and not csv_path.exists():
+    if not edf_path.exists() and not csv_path.exists() and not (session_dir / 'raw_adc.bin').exists() and not (session_dir / 'raw_adc.bin.partial').exists():
         return emit({"ok": False, "error": "会话中没有 eeg_raw.edf、eeg_raw.edf.partial 或旧版 CSV"}, 2)
 
     try:
@@ -154,8 +155,30 @@ def run() -> int:
         if sample_rate_hz <= 0:
             raise ValueError("session.json 中的 sampleRateHz 无效")
         invalid_rows = 0
-        if edf_path.exists():
+        raw_path = session_dir / 'raw_adc.bin'
+        if not raw_path.exists():
+            raw_path = session_dir / 'raw_adc.bin.partial'
+        if metadata.get('rawDataFile') == 'raw_adc.bin':
+            if not raw_path.exists() or raw_path.stat().st_size % 16:
+                raise ValueError('完整精度原始记录缺失或截断，不能静默退回有损 EDF')
+            dtype = np.dtype([('code','<i4'),('seq','<u2'),('reserved','<u2'),('elapsed_ms','<f8')])
+            records = np.fromfile(raw_path, dtype=dtype)
+            if not records.size or np.any(records['code'] < -8388608) or np.any(records['code'] > 8388607):
+                raise ValueError('原始 ADC 数据无效')
+            scale = metadata.get('adcScale') or {'vrefVolts':4.5,'gain':24}
+            signal_uv = records['code'].astype('float64') * float(scale['vrefVolts']) * 1e6 / (float(scale['gain']) * 8388608)
+            info = mne.create_info(ch_names=['EEG'],sfreq=sample_rate_hz,ch_types=['eeg'])
+            raw = mne.io.RawArray((signal_uv*1e-6).reshape(1,-1), info, verbose='ERROR')
+            source_path = raw_path
+        elif edf_path.exists():
             signal_uv, raw, sample_rate_hz = load_signal_from_edf(edf_path, mne, np)
+            # EDF pads its final data record; those zeros were never acquired.
+            if isinstance(metadata.get('rows'), int):
+                count = min(max(0, metadata['rows']), len(signal_uv))
+                if count < sample_rate_hz * 30:
+                    raise ValueError('实际采集数据不足 30 秒')
+                signal_uv = signal_uv[:count]
+                raw.crop(tmax=(count - 1) / sample_rate_hz)
             source_path = edf_path
         else:
             signal_uv, invalid_rows = load_signal(csv_path, np)
@@ -207,11 +230,43 @@ def run() -> int:
     if epoch_count == 0:
         return emit({"ok": False, "error": "YASA 未产生有效的 30 秒 epoch"}, 3)
 
-    realtime_stages = read_realtime_stages(session_dir / "events.jsonl")
+    # EDF contains received samples only, whereas live epoch time also includes
+    # sequence gaps. Index equality is not proof of temporal alignment.
+    alignment_valid = False
+    try:
+        wall_seconds = (datetime.fromisoformat(metadata['endedAt']) - datetime.fromisoformat(metadata['startedAt'])).total_seconds()
+        alignment_valid = abs(wall_seconds - len(signal_uv) / sample_rate_hz) < 1
+    except (KeyError, ValueError, TypeError):
+        pass
+    if alignment_valid:
+        events_path = session_dir / 'events.jsonl'
+        if not events_path.exists():
+            alignment_valid = False
+        else:
+            with events_path.open(encoding='utf-8') as stream:
+                for line in stream:
+                    try:
+                        if json.loads(line).get('action') == 'eeg_seq_gap':
+                            alignment_valid = False
+                            break
+                    except json.JSONDecodeError:
+                        alignment_valid = False
+                        break
+    realtime_stages = read_realtime_stages(session_dir / "events.jsonl") if alignment_valid else {}
     rows: list[dict[str, Any]] = []
     compared = 0
     agreed = 0
     for index, stage in enumerate(labels):
+        candidate_stage = stage
+        segment = signal_uv[round(index * 30 * sample_rate_hz):round((index + 1) * 30 * sample_rate_hz)]
+        # BrainLume's fixed 4.5V/24x ADC input range is +/-187500 uV.
+        # Test the raw samples, before a high-pass filter can hide saturation.
+        raw_saturated_samples = int(np.count_nonzero(np.abs(segment) >= 185625))
+        raw_flatline = bool(segment.size and np.ptp(segment) == 0)
+        quality_reason = 'raw_saturation' if raw_saturated_samples else ('raw_flatline' if raw_flatline else 'not_rejected_by_raw_checks')
+        if raw_saturated_samples or raw_flatline:
+            stage = 'UNKNOWN'
+            labels[index] = stage
         probabilities = {stage_name: 0.0 for stage_name in STAGE_ORDER}
         for column_index, name in enumerate(probability_names):
             if column_index < probability_values.shape[1]:
@@ -227,7 +282,10 @@ def run() -> int:
             "start_sec": index * 30,
             "end_sec": (index + 1) * 30,
             "stage": stage,
-            "confidence": max(probabilities.values()),
+            "candidate_stage": candidate_stage,
+            "quality_reason": quality_reason,
+            "raw_saturated_samples": raw_saturated_samples,
+            "confidence": max(probabilities.values()) if stage != 'UNKNOWN' else 0.0,
             **probabilities,
             "realtime_stage": realtime_stage,
             "agree_with_realtime": agreement,
@@ -238,6 +296,7 @@ def run() -> int:
     summary_path = output_dir / "yasa_summary.json"
     fieldnames = [
         "epoch_index", "start_sec", "end_sec", "stage", "confidence",
+        "candidate_stage", "quality_reason", "raw_saturated_samples",
         "W", "N1", "N2", "N3", "REM", "realtime_stage", "agree_with_realtime",
     ]
     with epochs_path.open("w", encoding="utf-8-sig", newline="") as handle:
@@ -246,9 +305,9 @@ def run() -> int:
         writer.writerows(rows)
 
     counts = Counter(labels)
-    stage_counts = {stage: int(counts.get(stage, 0)) for stage in STAGE_ORDER}
+    stage_counts = {stage: int(counts.get(stage, 0)) for stage in (*STAGE_ORDER, 'UNKNOWN')}
     stage_percent = {
-        stage: (stage_counts[stage] / epoch_count * 100) for stage in STAGE_ORDER
+        stage: (stage_counts[stage] / epoch_count * 100) for stage in stage_counts
     }
     warnings: list[str] = [
         "本次复核使用一条双极 EEG 导联（两枚互为参考电极）；未提供 EOG/EMG，REM 与 N1 的判定应谨慎解释。",
@@ -256,6 +315,9 @@ def run() -> int:
     ]
     if invalid_rows:
         warnings.append(f"发现 {invalid_rows} 行无效电压；仅在缺失比例低于 5% 时做线性插值后送入 YASA。")
+    if not alignment_valid:
+        warnings.append('原始样本时间与实际采集时间不一致或缺少时间证据，已禁用按 epoch 编号直接计算在线/离线一致率。')
+    warnings.append('原始 ADC 近满量程或整段恒值的 epoch 标为 UNKNOWN；其他片段也不代表已通过完整人工质量复核。')
     if source_path.name.endswith(".partial"):
         warnings.append("输入是尚未正常结束的 partial 会话，结果仅供阶段性检查。")
 
@@ -288,4 +350,4 @@ if __name__ == "__main__":
     try:
         raise SystemExit(run())
     except Exception as exc:
-        raise SystemExit(emit({"ok": False, "error": str(exc)}, 10))
+        raise SystemExit(emit({"ok": False, "error": str(exc), "errorType": type(exc).__name__}, 10))

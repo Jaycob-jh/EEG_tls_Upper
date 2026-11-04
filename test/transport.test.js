@@ -5,6 +5,28 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
+test('unexpected disconnect removes the old notification listener before a characteristic is reused', () => {
+    delete require.cache[require.resolve('../src/transport.js')];
+    require('../src/transport.js');
+    try {
+        const { BleTransport } = globalThis.BrainLumeBle;
+        const notify = new EventTarget();
+        const old = new BleTransport(), current = new BleTransport();
+        let oldSamples=0, currentSamples=0;
+        old.onData(() => oldSamples++); current.onData(() => currentSamples++);
+        old.notifyCharacteristic = notify;
+        notify.addEventListener('characteristicvaluechanged', old._onNotification);
+        old._onDisconnected();
+        current.notifyCharacteristic = notify;
+        notify.addEventListener('characteristicvaluechanged', current._onNotification);
+        notify.value = new DataView(Uint8Array.from([1,2,3]).buffer);
+        notify.dispatchEvent(new Event('characteristicvaluechanged'));
+        assert.equal(oldSamples, 0);
+        assert.equal(currentSamples, 1);
+        current._clearGattState(false);
+    } finally { delete globalThis.BrainLumeBle; }
+});
+
 test('desktop app keeps a bounded extended Windows GATT recovery window', () => {
     const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'app.js'), 'utf8');
     assert.match(source, /const BLE_CONNECT_ATTEMPTS = 6;/);

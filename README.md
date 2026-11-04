@@ -7,7 +7,8 @@ EEG CH2；工程调试页仍允许在 CH1~CH8 中选择测试通道。这里的 
 
 ## 当前版本
 
-- 应用版本：`0.5.1`（Windows、macOS、Android 同步版本）
+- 桌面源码版本：`0.6.0`；本次成品发布为 Apple Silicon macOS arm64，Android 保持原版本。
+- v0.6.0 的变化与限制见 [发布说明](RELEASE_NOTES_v0.6.0.md)。旧定时方案已停用。
 - BrainLume SDK：`1.0.3`
 - 框架：Electron + 原生 HTML/CSS/JavaScript
 - 桌面平台：Windows 10/11 x64、Apple Silicon macOS arm64

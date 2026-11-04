@@ -254,7 +254,22 @@
                 if (header > 0) this.buffer.splice(0, header);
                 if (this.buffer.length < 6) break;
                 const total = 8 + this.buffer[5];
-                if (this.buffer.length < total) break;
+                if (this.buffer.length < total) {
+                    // Recover only at a complete CRC-verified boundary; a header
+                    // by itself can occur inside a fragmented EEG payload.
+                    let recovered = -1;
+                    for (let i = 1; i + 8 <= this.buffer.length; i++) {
+                        if (this.buffer[i] !== HEADER_A || this.buffer[i + 1] !== HEADER_B) continue;
+                        const nextLength = 8 + this.buffer[i + 5];
+                        if (i + nextLength > this.buffer.length) continue;
+                        try { parseFrame(Uint8Array.from(this.buffer.slice(i, i + nextLength))); recovered = i; break; }
+                        catch { /* keep searching */ }
+                    }
+                    if (recovered < 0) break;
+                    if (this.onError) this.onError(new ProtocolError(`Recovered framing after ${recovered} bytes with invalid/incomplete length`));
+                    this.buffer.splice(0, recovered);
+                    continue;
+                }
                 const candidate = Uint8Array.from(this.buffer.slice(0, total));
                 try {
                     frames.push(parseFrame(candidate));

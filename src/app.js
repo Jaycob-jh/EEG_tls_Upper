@@ -10,8 +10,8 @@
     const BLE_CONNECT_ATTEMPTS = 6;
     const BLE_CONNECT_RETRY_DELAY_MS = 1000;
     const ACTION_LABELS = Object.freeze({
-        impedance_check: '检测阻抗', eeg_start: '启动 EEG', eeg_stop: '停止 EEG',
-        light_start: '启动光刺激', light_stop: '停止光刺激', status_query: '查询状态',
+        impedance_check: '检测阻抗', eeg_start: '开始采集', eeg_stop: '停止采集',
+        light_start: '启动光照', light_stop: '停止光照', status_query: '查询状态',
     });
 
     function loadSleepStimulusProtocol() {
@@ -41,6 +41,8 @@
         deviceInfo: null,
         selectedChannel: Number(localStorage.getItem('selectedChannel') || 2),
         eegRunning: false,
+        deviceEegRunning: false,
+        eegStopError: null,
         indicatorRunning: false,
         indicatorPending: false,
         lightRunning: { 1: false, 2: false },
@@ -57,6 +59,8 @@
         edfQueue: [],
         edfFlushPromise: Promise.resolve(),
         sessionEventPromise: Promise.resolve(),
+        sessionFinishPromise: null,
+        recordingWriteError: null,
         sampleIndex: 0,
         streamStats: Core.createEegStreamStats(),
         streamMetricsTimer: null,
@@ -89,6 +93,13 @@
         sleepStimulusStopTimer: null,
         sleepStimulusActiveChannel: null,
         sleepEpochLightChannels: new Set(),
+        badSignalEpochs: 0,
+        lastEegReceivedAt: null,
+        liveQuality: null,
+        livePrediction: null,
+        manualLightChannel: null,
+        manualLightUntil: 0,
+        manualLightStopTimer: null,
         lightLeasePromise: Promise.resolve(),
     };
 
@@ -164,7 +175,7 @@
     }
 
     function sleepStageLabel(stage) {
-        return String(stage) === (SleepPostprocess?.UNKNOWN_STAGE || 'UNKNOWN') ? '不可评分' : String(stage || '--');
+        return String(stage) === (SleepPostprocess?.UNKNOWN_STAGE || 'UNKNOWN') ? '无法判断' : String(stage || '--');
     }
 
     function sleepCandidateStage(item) {
@@ -175,7 +186,7 @@
         const scoredStage = String(item?.stage || 'UNKNOWN');
         const candidateStage = sleepCandidateStage(item);
         if (scoredStage !== (SleepPostprocess?.UNKNOWN_STAGE || 'UNKNOWN')) return sleepStageLabel(scoredStage);
-        if (candidateStage === 'N3') return 'N3 候选';
+        if (candidateStage === 'N3') return '可能是 N3';
         if (candidateStage !== (SleepPostprocess?.UNKNOWN_STAGE || 'UNKNOWN')) return sleepStageLabel(candidateStage);
         return sleepStageLabel(scoredStage);
     }
@@ -184,25 +195,34 @@
         const scoredStage = String(item?.stage || 'UNKNOWN');
         const candidateStage = sleepCandidateStage(item);
         const status = item?.quality?.ok === false
-            ? '质量警告（未计入）' : n3StatusLabel(item?.n3Status);
+            ? '信号异常，不计入' : n3StatusLabel(item?.n3Status);
         if (scoredStage === (SleepPostprocess?.UNKNOWN_STAGE || 'UNKNOWN')) {
             const candidate = candidateStage === (SleepPostprocess?.UNKNOWN_STAGE || 'UNKNOWN')
                 ? '' : `模型 ${sleepStageLabel(candidateStage)}${candidateStage === 'N3' && Number.isFinite(Number(item?.candidateConfidence))
                     ? ` · 概率 ${(Number(item.candidateConfidence) * 100).toFixed(1)}%` : ''}`;
-            return [status, candidate, '本 epoch 不计入有效分期'].filter(Boolean).join(' · ');
+            return [status, candidate, '本片段 不计入有效分期'].filter(Boolean).join(' · ');
         }
         return status || '已输出';
     }
 
     function n3StatusLabel(status) {
         return ({
-            trusted: 'N3 已确认', pending: 'N3 待连续确认', pending_exit: 'N3 退出待确认',
-            suppressed: 'N3 未通过安全确认', quality_rejected: '质量警告（未计入）',
-            inactive: 'N3 未命中', unavailable: '后处理不可用',
+            trusted: 'N3 通过额外检查', pending: '等待更多 N3 片段', pending_exit: '正在确认 N3 是否结束',
+            suppressed: 'N3 未通过额外检查', quality_rejected: '信号异常，不计入',
+            inactive: 'N3 未命中', unavailable: '额外检查未能运行',
         })[String(status || '')] || '';
     }
 
+    function signalReasonLabel(reason) {
+        return ({ raw_saturation: '信号超出范围', amplitude: '信号波动过大',
+            flatline: '信号几乎没有变化', sample_gap: '数据有断档' })[reason] || '信号异常';
+    }
+
     function protocolErrorContext(error) {
+        if (error?.raw && !error.frame) return {
+            errorName: error.name, receivedCrc: error.expected, calculatedCrc: error.actual,
+            rawFrameHex: Core.bytesToHex(error.raw),
+        };
         if (!error?.frame) return {};
         const frame = error.frame;
         return {
@@ -238,14 +258,91 @@
         }
     }
 
+    function renderLiveStatus() {
+        if (!$('live-connection')) return;
+        const gate = state.sleepStimulusGate;
+        const status = window.CaoCaoLiveStatus.project({
+            connected: state.connected, connecting: state.connecting, eegRunning: state.eegRunning,
+            eegStopError: state.eegStopError, recordingWriteError: state.recordingWriteError,
+            modelReady: state.sleepModelReady && !state.liveModelError, lastSampleAt: state.lastEegReceivedAt,
+            startedAt: state.liveStartedAt || Date.now(), quality: state.liveQuality, prediction: state.livePrediction,
+            protocol: state.sleepStimulusProtocol, matchedCount: gate?.matchedCount,
+            lastTriggeredAt: gate?.lastTriggeredAt, activeUntil: state.manualLightChannel ? state.manualLightUntil : gate?.activeUntil,
+            manualLight: Boolean(state.manualLightChannel),
+            lightVerified: state.lightStateVerified, lightPending: state.lightStatePending,
+            lightRunning: Boolean(state.lightRunning[1] || state.lightRunning[2]),
+        });
+        for (const [id, value] of Object.entries({
+            'live-connection': status.connection, 'live-acquisition': status.acquisition,
+            'live-signal': status.signal, 'live-stage': status.stage, 'live-n3-probability': status.probability,
+            'live-light': status.light, 'live-automation': status.automation, 'live-prediction-age': status.freshness,
+            'live-target-probability-label': status.probabilityLabel,
+        })) $(id).textContent = value;
+        $('live-duration').textContent = Core.formatDuration(currentRecordingDurationSeconds());
+        const manualLabel = $('manual-light-live-state');
+        if (manualLabel) manualLabel.textContent = state.manualLightChannel
+            ? `手动光照中 · ${state.manualLightChannel === 3 ? '两个光源' : `光源${state.manualLightChannel}`} ${state.manualLightUntil ? `· 剩余 ${Math.max(0, Math.ceil((state.manualLightUntil - Date.now()) / 1000))} 秒` : ''}`
+            : '未启动手动光照';
+        $('live-light-confirmed').textContent = state.connected && state.lightStateCheckedAt ? `最近设备确认：${state.lightStateCheckedAt}` : '等待设备回报';
+        $('live-status-badge').textContent = status.live ? '● 数据接收中' : '● 等待数据';
+        $('live-status-badge').dataset.live = String(status.live);
+        if (state.probabilityDisplayAvailable && status.probability === '--') renderSleepProbabilities();
+    }
+
+    function renderSimpleWorkflow() {
+        renderLiveStatus();
+        if (!$('simple-device-status')) return;
+        const p = state.sleepStimulusProtocol;
+        const armed = p.enabled && modelStimulusSourceAvailable();
+        const targets = p.targetStages.join(' / ') || '未选择目标';
+        $('simple-device-status').textContent = state.connected ? '已连接' : (state.connecting ? '连接中…' : '未连接');
+        $('simple-eeg-status').textContent = state.eegStopError ? '停止未确认' : state.recordingWriteError ? '保存失败' : state.eegRunning ? '正在采集' : '未开始';
+        $('simple-n3-status').textContent = !armed ? '未开启' : p.shadowMode ? '试运行 · 不发光' : state.sleepStimulusActiveChannel ? '正在光照' : `已开启 · 等待 ${targets}`;
+        const lightDuration = p.durationSeconds < 60 ? `${p.durationSeconds} 秒`
+            : `${Math.floor(p.durationSeconds / 60)} 分${p.durationSeconds % 60 ? ` ${p.durationSeconds % 60} 秒` : '钟'}`;
+        $('simple-n3-parameters').textContent = `目标 ${targets} · ${p.lightChannel === 3 ? '两个光源' : `光源${p.lightChannel}`} · ${p.frequencyHz} Hz · ${p.powerPercent}% · 每次 ${lightDuration}`;
+        for (const [id, active] of [['simple-device-status',state.connected],['simple-eeg-status',state.eegRunning],['simple-n3-status',armed]]) $(id).setAttribute?.('data-active',String(Boolean(active)));
+        const button = $('simple-n3-toggle');
+        button.textContent = armed ? '关闭自动光照' : '开启自动光照';
+        button.className = `button ${armed ? 'danger' : 'primary'}`;
+        button.disabled = !armed && (!state.connected || !state.eegRunning || !state.sleepModelReady || Boolean(state.manualLightChannel));
+        $('simple-session-hint').textContent = !state.connected ? '先点击第 1 步「连接设备」。'
+            : !state.eegRunning ? '设备已连接，点击第 2 步「开始采集」。'
+            : !armed ? '正在采集并保存。需要自动光照时，再开启第 3 步。'
+            : p.shadowMode ? '试运行中，只记录，不开灯。'
+            : `目标 ${targets}；同一分期连续满足 ${p.consecutiveEpochs} 次（约 ${p.consecutiveEpochs / 2} 分钟），并满足阈值、质量与间隔条件后才发光。`;
+    }
+
+    async function toggleSimpleN3() {
+        if (state.sleepStimulusProtocol.enabled) return disableSleepStimulus('手动关闭');
+        if (!state.connected || !state.eegRunning) throw new Error('请先连接设备并开始采集');
+        if (!state.sleepModelReady) throw new Error('睡眠模型尚未就绪');
+        if (!state.realtimeEnabled) {
+            state.realtimeEnabled = true;
+            localStorage.setItem('realtimeSleepEnabled', 'true');
+            $('realtime-enabled').checked = true;
+            resetRealtimeSleep(true);
+        }
+        if (state.lightRunning[1] || state.lightRunning[2] || planEngine.getRelativeStatus()) throw new Error('请先停止正在运行的手动光照或方案');
+        const previousMode = state.stimulusControlMode;
+        state.stimulusControlMode = 'model';
+        localStorage.setItem('stimulusControlMode', 'model');
+        renderStimulusSources();
+        const protocol = applySleepStimulusProtocol({ ...state.sleepStimulusProtocol, enabled: true });
+        setSleepStimulusStatus(`已启用 · 等待 ${protocol.targetStages.join(' / ')}`);
+        await audit('stimulus_control_mode_changed', { mode: 'model', previousMode });
+        await audit('sleep_stimulus_enabled', protocol);
+    }
+
     function updateConnectionUi() {
+        renderSimpleWorkflow();
         const online = state.connected;
         $('sidebar-dot').classList.toggle('online', online);
         $('header-status').parentElement.classList.toggle('online', online);
-        $('header-status').textContent = state.connecting ? 'CONNECTING' : (online ? 'CONNECTED' : 'DISCONNECTED');
+        $('header-status').textContent = state.connecting ? '连接中' : (online ? '已连接' : '未连接');
         $('sidebar-connection').textContent = online ? '已连接' : (state.connecting ? '连接中' : '未连接');
         $('sidebar-device').textContent = online ? (state.transport?.name || 'BrainLume') : '等待设备';
-        $('connect-button').textContent = online ? '断开设备' : (state.connecting ? '正在连接…' : '连接 BLE');
+        $('connect-button').textContent = online ? '断开设备' : (state.connecting ? '正在连接…' : '连接设备');
         $('connect-button').disabled = state.connecting;
         $('metric-device').textContent = online ? (state.transport?.name || 'BrainLume') : '--';
         if (!online) {
@@ -280,7 +377,9 @@
     // opened in a mode-specific dialog; the light-command lease still
     // arbitrates so only one source can occupy the hardware at a time.
     function manualStimulusSourceAvailable() {
-        return Core.stimulusControlModeAllows(state.stimulusControlMode, 'manual');
+        // Manual output has its own explicit action; it is no longer hidden by
+        // the retired manual/model mode dropdown. The light lease prevents overlap.
+        return true;
     }
 
     function modelStimulusSourceAvailable() {
@@ -294,12 +393,12 @@
         const parts = [];
         if (hasN3) {
             parts.push(protocol.n3TriggerMode === 'confirmed'
-                ? `N3 保守确认 ≥ ${Math.round(protocol.minN3Confidence * 100)}%`
-                : `N3 候选阈值 ≥ ${Math.round(protocol.minN3Probability * 100)}%`);
+                ? `N3 额外检查后概率 ≥ ${Math.round(protocol.minN3Confidence * 100)}%`
+                : `N3 概率 ≥ ${Math.round(protocol.minN3Probability * 100)}%`);
         }
-        if (otherTargets.length) parts.push(`其他分期实验：${otherTargets.join('、')} · 置信度 ≥ ${Math.round(protocol.minConfidence * 100)}%`);
+        if (otherTargets.length) parts.push(`${otherTargets.join('、')} 概率 ≥ ${Math.round(protocol.minConfidence * 100)}%`);
         const targetLabel = targets.length ? targets.join('/') : '未选择目标';
-        return `目标 ${targetLabel} · ${parts.join(' · ') || '请先选择触发条件'} · 连续 ${protocol.consecutiveEpochs || 0} 个 epoch`;
+        return `目标 ${targetLabel} · ${parts.join(' · ') || '请先选择触发条件'} · 连续 ${protocol.consecutiveEpochs || 0} 段`;
     }
 
     function renderStimulusModeCard() {
@@ -321,7 +420,7 @@
             },
             model: {
                 title: labels.model,
-                description: '只允许当前因果模型候选进入实时触发。',
+                description: '只允许实时分期模型候选进入实时触发。',
                 summary: sleepStimulusTriggerSummary(protocol),
                 button: '设置模型触发',
                 status: modelStatus,
@@ -347,8 +446,8 @@
         if (summary) summary.textContent = modeCopy.summary;
         if (live) live.textContent = mode === 'model'
             ? (protocol.enabled
-                ? (protocol.shadowMode ? '验证模式 · 只记录命中，不发光' : '主动模式 · 满足门控后才允许发光')
-                : '协议未启用 · 默认验证模式，不发光')
+                ? (protocol.shadowMode ? '试运行 · 只记录命中，不发光' : '主动模式 · 满足检查后才允许发光')
+                : '协议未启用 · 默认试运行，不发光')
             : (mode === 'both' ? '模型和手动 / 方案分别配置' : '模型触发关闭');
         if (status) {
             status.className = `state-badge ${mode === 'model' && !protocol.enabled ? 'off' : ''}`;
@@ -359,9 +458,7 @@
         if (card) card.dataset.mode = mode;
         const dialogMode = $('sleep-stimulus-dialog-mode');
         if (dialogMode) {
-            dialogMode.textContent = mode === 'both'
-                ? '当前为组合模式；模型和手动 / 方案分别在各自弹窗中配置'
-                : '只配置实时模型；手动 / 方案在独立弹窗中配置';
+            dialogMode.textContent = protocol.enabled ? '自动光照已开启；保存后用于后续触发。' : '保存参数后，在首页开启自动光照。';
         }
         const combinedModelSummary = $('combined-model-summary');
         if (combinedModelSummary) combinedModelSummary.textContent = `${modelStatus} · ${sleepStimulusTriggerSummary(protocol)}`;
@@ -378,6 +475,9 @@
         $('manual-stimulus-settings-dialog')?.close();
         renderStimulusSources();
         renderSleepStimulusProtocol();
+        const feedback = $('sleep-settings-feedback');
+        feedback.dataset.error = 'false';
+        feedback.textContent = state.sleepStimulusProtocol.enabled ? '保存后用于后续触发，不会立即开灯。' : '保存后回首页开启，不会立即开灯。';
         if (!dialog.open) dialog.showModal();
         requestAnimationFrame(() => $('sleep-stimulus-n3-enabled')?.focus({ preventScroll: true }));
     }
@@ -388,7 +488,6 @@
         $('combined-stimulus-settings-dialog')?.close();
         $('sleep-stimulus-settings-dialog')?.close();
         renderStimulusSources();
-        renderNextAction();
         if (!dialog.open) dialog.showModal();
         requestAnimationFrame(() => $('home-light-frequency')?.focus({ preventScroll: true }));
     }
@@ -427,7 +526,7 @@
         const removesModel = !Core.stimulusControlModeAllows(mode, 'model');
         try {
             if (removesManual && (state.lightRunning[1] || state.lightRunning[2]) && !state.sleepStimulusActiveChannel) {
-                throw new Error('当前有手动或方案光刺激正在运行，请先停止后再切换控制方式');
+                throw new Error('当前有手动或方案光照正在运行，请先停止后再切换控制方式');
             }
             state.stimulusControlMode = mode;
             localStorage.setItem('stimulusControlMode', mode);
@@ -460,19 +559,22 @@
         });
         const manualStartButton = $('home-light-start');
         if (manualStartButton) manualStartButton.disabled = !manualAllowed || !connected;
+        if (manualStartButton && state.manualLightChannel) manualStartButton.disabled = true;
+        if (state.manualLightChannel) manualInputFields.forEach(id => { $(id).disabled = true; });
+        if ($('home-light-channel')) $('home-light-channel').disabled = Boolean(state.manualLightChannel);
         const stopButton = $('home-light-stop');
         if (stopButton) stopButton.disabled = !connected;
         setElementVisibility('sleep-stimulus-config', modelAllowed);
         const modelEnableLabel = $('sleep-stimulus-enabled')?.closest('.realtime-enable');
-        if (modelEnableLabel) modelEnableLabel.hidden = !modelAllowed;
+        if (modelEnableLabel) modelEnableLabel.hidden = true;
         const modelEnableToggle = $('sleep-stimulus-enabled');
-        if (modelEnableToggle) modelEnableToggle.disabled = !modelAllowed;
+        if (modelEnableToggle) modelEnableToggle.disabled = true;
         const settingsDialog = $('sleep-stimulus-settings-dialog');
         if (!modelAllowed && settingsDialog?.open) settingsDialog.close();
         const manualSettingsDialog = $('manual-stimulus-settings-dialog');
         if (!manualAllowed && manualSettingsDialog?.open) manualSettingsDialog.close();
         const detail = $('stimulus-control-detail');
-        if (detail) detail.textContent = `${Core.STIMULUS_CONTROL_MODE_LABELS[state.stimulusControlMode]}；${Core.stimulusControlModePresentation(state.stimulusControlMode).detail} 同一时刻只允许一个光刺激源输出。`;
+        if (detail) detail.textContent = `${Core.STIMULUS_CONTROL_MODE_LABELS[state.stimulusControlMode]}；${Core.stimulusControlModePresentation(state.stimulusControlMode).detail} 同一时刻只允许一个光照源输出。`;
         renderStimulusModeCard();
     }
 
@@ -487,16 +589,18 @@
     }
 
     function updateEegUi() {
+        renderSimpleWorkflow();
         $('metric-channel').textContent = `CH${state.selectedChannel}`;
-        $('metric-eeg').textContent = state.eegRunning ? 'RUNNING' : 'STOPPED';
+        $('metric-eeg').textContent = state.eegRunning ? '采集中' : '已停止';
         $('metric-eeg').style.color = state.eegRunning ? 'var(--green)' : '';
-        $('eeg-toggle-button').textContent = state.eegRunning ? '停止 EEG' : '开始 EEG';
+        $('eeg-toggle-button').textContent = state.eegStopError ? '重试停止' : state.recordingWriteError && state.activeSession ? '重试保存' : state.eegRunning ? '停止采集' : '开始采集';
+        $('eeg-toggle-button').disabled = !state.connected;
         $('eeg-toggle-button').className = `button ${state.eegRunning ? 'danger' : 'success'}`;
         $('channel-select').value = String(state.selectedChannel);
         $('debug-channel').value = String(state.selectedChannel);
         $('wave-x-range').value = String(state.waveformWindowSeconds);
         $('wave-refresh-rate').value = String(state.waveformRefreshFps);
-        $('wave-title').innerHTML = `CH${state.selectedChannel} 预处理实时波形 <small class="wave-sync-note">显示 0.5–45 Hz + 50 Hz 陷波 · Y 轴自动刻度 · 分期输入训练一致 0.4–18 Hz</small>`;
+        $('wave-title').textContent = `CH${state.selectedChannel} 实时脑电`;
         const sampleCount = state.activeSession ? state.sampleIndex : 0;
         const sampleRate = recordingSampleRate();
         $('metric-recording').textContent = Core.formatDuration(currentRecordingDurationSeconds());
@@ -523,10 +627,16 @@
         return state.waveformWindowSeconds * 250;
     }
 
-    function renderSleepProbabilities(probabilities = [0, 0, 0, 0, 0]) {
+    function renderSleepProbabilities(probabilities = null, info = null) {
+        const available = probabilities?.length === 5 && probabilities.every(Number.isFinite)
+            && probabilities.reduce((sum, value) => sum + value, 0) > 0;
+        state.probabilityDisplayAvailable = Boolean(available);
+        $('probability-result-note').textContent = available
+            ? `实时分期 · ${info?.outputTime || formatTime()}${info?.quality?.ok === false ? ' · 信号异常，不计入有效分期' : ''}`
+            : (state.realtimeEnabled ? '等待新的分期结果' : '实时分期已停用');
         $('realtime-probabilities').innerHTML = Sleep.STAGES.map((stage, index) => {
-            const value = Math.max(0, Math.min(1, Number(probabilities[index] || 0)));
-            return `<div class="stage-probability"><span>${stage}</span><div><i style="width:${(value * 100).toFixed(1)}%"></i></div><strong>${(value * 100).toFixed(1)}%</strong></div>`;
+            const value = available ? Math.max(0, Math.min(1, Number(probabilities[index] || 0))) : 0;
+            return `<div class="stage-probability"><span>${stage}</span><div><i style="width:${(value * 100).toFixed(1)}%"></i></div><strong>${available ? `${(value * 100).toFixed(1)}%` : '--'}</strong></div>`;
         }).join('');
     }
 
@@ -534,35 +644,43 @@
         state.sleepInferenceGeneration += 1;
         state.sleepInferencePromise = Promise.resolve();
         state.sleepPipeline?.reset();
+        state.liveQuality = null;
+        state.livePrediction = null;
+        state.badSignalEpochs = 0;
+        if ($('realtime-health-hint')) $('realtime-health-hint').hidden = true;
         state.sleepModelFilter?.reset();
+        const previousTriggerTime = state.sleepStimulusGate?.lastTriggeredAt ?? null;
         state.sleepStimulusGate?.reset();
+        if (state.sleepStimulusGate) state.sleepStimulusGate.lastTriggeredAt = previousTriggerTime;
         Object.values(state.sleepProbabilitySmoothers).forEach(smoother => smoother?.reset());
         Object.values(state.sleepN3Postprocessors).forEach(processor => processor?.reset());
         state.sleepEpochLightChannels.clear();
         if (clearHistory) state.sleepHistory = [];
-        $('realtime-epoch').textContent = '0 epoch';
-        $('realtime-progress').textContent = '当前窗口 0%';
+        $('realtime-epoch').textContent = '0 段';
+        $('realtime-progress').textContent = '判断所需数据 0%';
         $('realtime-stage').textContent = state.realtimeEnabled ? '等待数据' : '已停用';
         $('realtime-stage-time').textContent = '尚无结果';
         $('realtime-quality').textContent = '--';
-        $('realtime-quality-detail').textContent = '等待 30 秒 epoch';
-        $('realtime-inference-state').textContent = state.realtimeEnabled ? '等待 EEG' : '实时分析已停用';
+        $('realtime-quality-detail').textContent = '等待 30 秒片段';
+        $('realtime-inference-state').textContent = state.realtimeEnabled ? '等待脑电数据' : '实时分期已停用';
         renderSleepProbabilities();
-        $('realtime-history').innerHTML = '<tr><td colspan="11">尚无分期结果</td></tr>';
+        $('realtime-history').innerHTML = '<tr><td colspan="6">尚无分期结果</td></tr>';
     }
 
     function renderSleepHistory() {
-        $('realtime-history').innerHTML = state.sleepHistory.length ? state.sleepHistory.map(item => `<tr>
-            <td>${escapeHtml(item.outputTime)}</td><td>${item.epochIndex + 1}</td><td title="${item.inferenceMode === 'causal' ? '当前因果输出，用于实验性闭环候选' : '训练一致中心输出，用于回顾性验证'}${item.n3Reason ? ` · ${item.n3Reason}` : ''}"><span class="state-badge ${item.quality.ok && item.stage !== (SleepPostprocess?.UNKNOWN_STAGE || 'UNKNOWN') ? '' : 'off'}">${escapeHtml(sleepStagePresentation(item))}</span><small class="stage-source">${item.inferenceMode === 'causal' ? '当前候选' : '中心验证'} · ${escapeHtml(sleepStagePresentationDetail(item))}</small></td>
-            <td>${sleepHistoryProbability(item)}</td><td>${item.quality.ok ? '通过' : escapeHtml(item.quality.reason)}</td>
-            <td>${item.stimulusShadow ? '验证命中（未发光）' : (item.lightChannels?.length ? `CH${item.lightChannels.join('、CH')} 开启` : '关闭')}</td>
-            ${item.probabilities.map(value => `<td>${(value * 100).toFixed(1)}%</td>`).join('')}
-        </tr>`).join('') : '<tr><td colspan="11">尚无分期结果</td></tr>';
+        const mode = $('realtime-history-mode').value || 'causal';
+        const rows = state.sleepHistory.filter(item => item.inferenceMode === mode);
+        $('realtime-history').innerHTML = rows.length ? rows.map(item => `<tr>
+            <td>${escapeHtml(item.outputTime)}</td><td>${item.epochIndex + 1}</td><td title="${item.inferenceMode === 'causal' ? '实时判断，可用于自动光照' : '利用后续数据判断约 5 分钟前，只供查看'}"><span class="state-badge ${item.quality.ok && item.stage !== (SleepPostprocess?.UNKNOWN_STAGE || 'UNKNOWN') ? '' : 'off'}">${escapeHtml(sleepStagePresentation(item))}</span><small class="stage-source">${escapeHtml(sleepStagePresentationDetail(item))}</small></td>
+            <td>${sleepHistoryProbability(item)}</td><td>${item.quality.ok ? '正常' : signalReasonLabel(item.quality.reason)}</td>
+            <td>${item.inferenceMode === 'center' ? '只供查看' : item.stimulusShadow ? '试运行达标，未开灯' : (item.lightChannels?.length ? `CH${item.lightChannels.join('、CH')} 开启` : '关闭')}</td>
+        </tr>`).join('') : '<tr><td colspan="6">尚无此类分期结果</td></tr>';
     }
 
     function sleepHistoryProbability(item) {
-        const value = item?.candidateStage === 'N3' && Number.isFinite(Number(item.candidateConfidence))
-            ? Number(item.candidateConfidence) : Number(item?.confidence);
+        const stageIndex = Sleep.STAGES.indexOf(item?.stage);
+        const displayedProbability = stageIndex >= 0 ? item?.probabilities?.[stageIndex] : null;
+        const value = Number(displayedProbability ?? (stageIndex >= 0 ? item?.confidence : item?.candidateConfidence ?? item?.modelConfidence ?? item?.confidence));
         return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : '--';
     }
 
@@ -588,6 +706,7 @@
     }
 
     function setSleepStimulusStatus(message) {
+        renderSimpleWorkflow();
         $('sleep-stimulus-status').textContent = message;
         $('realtime-closed-loop-state').textContent = message;
         if (state.sleepStimulusProtocol.enabled && modelStimulusSourceAvailable()) {
@@ -634,13 +753,13 @@
         const modeHelp = $('sleep-stimulus-n3-mode-help');
         if (modeHelp) {
             modeHelp.textContent = n3TriggerMode === 'confirmed'
-                ? '先由独立 N3 后处理确认，再按置信度和连续命中判断；反应可能更慢。'
-                : '直接使用当前因果候选的 N3 概率判断，响应更快；属于研究性闭环。';
+                ? '增加一次信号特征检查，可能更晚开灯；不保证更准确。'
+                : '按实时模型给出的 N3 概率判断。';
         }
         const confidenceHelp = $('sleep-stimulus-other-confidence-help');
         if (confidenceHelp) {
             confidenceHelp.textContent = nonN3Stages.length
-                ? `仅用于 ${nonN3Stages.join('、')}；N3 使用默认区域的专用阈值。`
+                ? `用于 ${nonN3Stages.join('、')}；N3 使用自己的阈值。`
                 : '当前没有其他分期目标，此项不会参与判断。';
         }
         const triggerSummary = $('sleep-stimulus-trigger-summary');
@@ -648,16 +767,19 @@
             const targetText = targetStages.size ? [...targetStages].join('、') : '尚未选择';
             const modeText = includesN3
                 ? (n3TriggerMode === 'confirmed'
-                    ? 'N3 使用保守后处理确认及连续稳定门控'
-                    : 'N3 使用当前因果候选概率及连续稳定门控')
-                : '当前未启用 N3 实时触发';
-            const otherText = nonN3Stages.length ? '其他分期为实验性目标' : '其他分期实验未启用';
-            triggerSummary.textContent = `当前目标：${targetText}；${modeText}；${otherText}；必须收满 21 个 epoch、上下文与信号质量通过、连续命中且设备状态已确认。`;
+                    ? 'N3 需额外检查'
+                    : '按 N3 概率判断')
+                : `概率至少 ${Math.round((protocol?.minConfidence ?? Number($('sleep-stimulus-other-confidence').value) / 100) * 100)}%`;
+            triggerSummary.textContent = `目标：${targetText} · ${modeText}。先收满约 10.5 分钟的合格数据，再按下方条件开灯。`;
         }
     }
 
     function renderSleepStimulusProtocol() {
+        renderSimpleWorkflow();
         const protocol = state.sleepStimulusProtocol;
+        $('stimulus-active-mode-note').textContent = protocol.shadowMode
+            ? '试运行：只记录命中，不发光。'
+            : '自动开灯：开启后，满足所选条件才发光。';
         const modelAllowed = modelStimulusSourceAvailable();
         $('sleep-stimulus-enabled').checked = modelAllowed && protocol.enabled;
         $('sleep-stimulus-n3-enabled').checked = protocol.targetStages.includes('N3');
@@ -677,8 +799,8 @@
         $('sleep-stimulus-shadow-mode').checked = protocol.shadowMode;
         renderSleepStimulusTriggerFields(protocol);
         $('sleep-stimulus-mode').textContent = `${protocol.shadowMode
-            ? `验证模式：仅记录命中，不发光 · ${sleepStimulusTriggerSummary(protocol)}`
-            : `主动模式：允许向设备发送发光命令 · ${sleepStimulusTriggerSummary(protocol)}`} · 其他分期为实验性设置；中心/YASA 只复核`;
+            ? `试运行：仅记录命中，不发光 · ${sleepStimulusTriggerSummary(protocol)}`
+            : `自动开灯 · ${sleepStimulusTriggerSummary(protocol)}`} · 回看结果和重新分期不会开灯`;
         renderStimulusModeCard();
         if (!protocol.enabled) setSleepStimulusStatus('未启用');
     }
@@ -691,7 +813,13 @@
         const errors = Sleep.validateStimulusProtocol(protocol);
         if (errors.length) throw new Error(errors.join('；'));
         state.sleepStimulusProtocol = Sleep.normalizeStimulusProtocol(protocol);
+        const previousTriggerTime = state.sleepStimulusGate.lastTriggeredAt;
+        const previousActiveUntil = state.sleepStimulusGate.activeUntil;
         state.sleepStimulusGate.updateProtocol(state.sleepStimulusProtocol);
+        // Changing targets restarts consecutive matching, not the shared
+        // cooldown or the duration of an already running light pulse.
+        state.sleepStimulusGate.lastTriggeredAt = previousTriggerTime;
+        state.sleepStimulusGate.activeUntil = previousActiveUntil;
         saveSleepStimulusProtocol(state.sleepStimulusProtocol);
         renderSleepStimulusProtocol();
         return state.sleepStimulusProtocol;
@@ -700,11 +828,13 @@
     async function disableSleepStimulus(reason, stopActive = true) {
         const wasEnabled = state.sleepStimulusProtocol.enabled;
         const activeChannel = state.sleepStimulusActiveChannel;
+        const previousTriggerTime = state.sleepStimulusGate?.lastTriggeredAt ?? null;
         if (state.sleepStimulusStopTimer) clearTimeout(state.sleepStimulusStopTimer);
         state.sleepStimulusStopTimer = null;
         state.sleepStimulusActiveChannel = null;
         state.sleepStimulusProtocol = { ...state.sleepStimulusProtocol, enabled: false };
         state.sleepStimulusGate?.updateProtocol(state.sleepStimulusProtocol);
+        if (state.sleepStimulusGate) state.sleepStimulusGate.lastTriggeredAt = previousTriggerTime;
         if ($('sleep-stimulus-enabled')) $('sleep-stimulus-enabled').checked = false;
         setSleepStimulusStatus(`未启用${reason ? ` · ${reason}` : ''}`);
         if (stopActive && activeChannel && state.connected) {
@@ -737,11 +867,11 @@
         }
         const triggerLabel = trigger.triggerBasis === 'n3_probability'
             ? `N3 概率 ${(trigger.n3Probability * 100).toFixed(1)}%`
-            : `置信度 ${(trigger.confidence * 100).toFixed(1)}%`;
+            : `把握程度 ${(trigger.confidence * 100).toFixed(1)}%`;
         if (trigger.shadowMode) {
             await audit('sleep_stimulus_shadow_triggered', { ...trigger, deviceCommandSent: false });
-            setSleepStimulusStatus(`${trigger.stage} 验证命中 · ${triggerLabel} · 未发光`);
-            addActivity(`睡眠分期 ${trigger.stage} 验证命中（shadow mode，未发光）`);
+            setSleepStimulusStatus(`${trigger.stage} 试运行达标 · ${triggerLabel} · 未发光`);
+            addActivity(`睡眠分期 ${trigger.stage} 试运行达标（shadow mode，未发光）`);
             return;
         }
         return withLightLease(() => executeSleepStimulusHardware(trigger, triggerLabel));
@@ -750,12 +880,12 @@
     async function executeSleepStimulusHardware(trigger, triggerLabel) {
         if (!state.sleepStimulusProtocol.enabled || !state.connected || !state.eegRunning) {
             state.sleepStimulusGate.cancelTrigger();
-            setSleepStimulusStatus('模型触发已取消 · 设备、EEG 或协议状态已变化');
+            setSleepStimulusStatus('模型触发已取消 · 设备、EEG 或自动光照状态已变化');
             return;
         }
         if (planEngine.getRelativeStatus() || state.lightRunning[1] || state.lightRunning[2]) {
             state.sleepStimulusGate.cancelTrigger();
-            setSleepStimulusStatus('模型触发已暂停 · 手动或方案光刺激正在运行');
+            setSleepStimulusStatus('模型触发已暂停 · 手动或方案光照正在运行');
             return;
         }
         const channel = trigger.lightChannel;
@@ -768,6 +898,10 @@
             }, context);
             await startLight(channel, context);
         } catch (error) {
+            // A command can reach hardware even when its acknowledgement fails.
+            // Stop every selected output, including a partially started pair.
+            try { await stopLight(channel, { ...context, reason: 'trigger_failed', quiet: true }); }
+            catch (stopError) { await audit('sleep_stimulus_stop_unconfirmed', { channel, error: stopError.message }, 'error'); }
             state.sleepStimulusGate.cancelTrigger();
             setSleepStimulusStatus(`触发失败 · ${error.message}`);
             await audit('sleep_stimulus_trigger_failed', { ...trigger, error: error.message }, 'error');
@@ -775,8 +909,9 @@
         }
 
         state.sleepStimulusActiveChannel = channel;
-        setSleepStimulusStatus(`${trigger.stage} 已触发 CH${channel} · ${triggerLabel} · ${trigger.durationMs / 1000} 秒`);
-        addActivity(`睡眠分期 ${trigger.stage} 触发光刺激 CH${channel}`);
+        const channelLabel = channel === 3 ? '两个光源' : `光源${channel}`;
+        setSleepStimulusStatus(`${trigger.stage} 已触发 ${channelLabel} · ${triggerLabel} · ${trigger.durationMs / 1000} 秒`);
+        addActivity(`睡眠分期 ${trigger.stage} 触发光照 ${channelLabel}`);
         await audit('sleep_stimulus_triggered', { ...trigger, modelDelayEpochs: 0, decisionCadenceSeconds: 30 });
         if (state.sleepStimulusStopTimer) clearTimeout(state.sleepStimulusStopTimer);
         state.sleepStimulusStopTimer = setTimeout(() => {
@@ -786,7 +921,7 @@
             void runUiTask(() => withLightLease(async () => {
                 if (state.connected) await stopLight(channel, { source: 'sleep_stage', reason: 'duration_elapsed', quiet: true });
                 else await audit('sleep_stimulus_stop_unconfirmed', { channel, reason: 'ble_disconnected' }, 'error');
-                setSleepStimulusStatus(`冷却中 · ${trigger.cooldownMinutes} 分钟`);
+                setSleepStimulusStatus(`等待下次允许开灯 · ${trigger.cooldownMinutes} 分钟`);
                 await audit('sleep_stimulus_completed', { channel, epochIndex: trigger.epochIndex, stage: trigger.stage });
             }));
         }, trigger.durationMs);
@@ -799,11 +934,11 @@
             return;
         }
         if (!state.connected || !state.eegRunning) {
-            setSleepStimulusStatus('已启用 · 等待设备连接并启动 EEG');
+            setSleepStimulusStatus('已启用 · 等待设备连接并开始采集');
             return;
         }
         if (item.inferenceMode !== 'causal') {
-            setSleepStimulusStatus('已启用 · 中心输出仅作回顾性验证，等待当前因果候选');
+            setSleepStimulusStatus('已启用 · 延后结果仅作事后查看，等待实时分期');
             return;
         }
         const useN3ProbabilityTrigger = state.sleepStimulusProtocol.n3TriggerMode === 'probability'
@@ -812,12 +947,13 @@
         const stimulusControlEligible = useN3ProbabilityTrigger
             ? item.stimulusControlEligible === true : item.controlEligible === true;
         if (stimulusControlEligible !== true) {
+            state.sleepStimulusGate.reject('control_ineligible');
             const eligibilityReason = useN3ProbabilityTrigger
                 ? item.stimulusControlEligibilityReason : item.controlEligibilityReason;
             const reason = eligibilityReason === 'insufficient_context'
-                ? '尚未收满 21 个 epoch'
-                : (eligibilityReason === 'context_quality' ? '21 个 epoch 中存在质量警告' : '当前因果时序未满足');
-            setSleepStimulusStatus(`当前因果候选暂不触发 · ${reason}`);
+                ? '尚未收满 21 段'
+                : (eligibilityReason === 'context_quality' ? '21 段 中存在质量警告' : '实时分期时序未满足');
+            setSleepStimulusStatus(`实时分期暂不触发 · ${reason}`);
             await audit('sleep_stimulus_control_blocked', {
                 epochIndex: item.epochIndex,
                 stage: item.stage,
@@ -843,7 +979,7 @@
             return;
         }
         if (state.lightRunning[1] || state.lightRunning[2]) {
-            setSleepStimulusStatus('已启用 · 已有光刺激运行，暂停触发');
+            setSleepStimulusStatus('已启用 · 已有光照运行，暂停触发');
             return;
         }
         const decision = state.sleepStimulusGate.evaluate({
@@ -852,6 +988,7 @@
             confidence: item.confidence,
             candidateStage: item.candidateStage,
             candidateConfidence: item.candidateConfidence,
+            probabilities: item.probabilities,
             quality: item.quality,
             n3Postprocessed: item.n3Postprocessed === true,
         });
@@ -868,15 +1005,15 @@
             stage_not_selected: `等待目标分期 · 当前 ${sleepStageLabel(item.stage)}`,
             low_confidence: useN3ProbabilityTrigger
                 ? `N3 概率不足 · ${(Number(item.candidateConfidence || 0) * 100).toFixed(1)}%`
-                : `置信度不足 · ${(item.confidence * 100).toFixed(1)}%`,
+                : `把握程度不足 · ${(item.confidence * 100).toFixed(1)}%`,
             stimulus_active: '刺激进行中',
-            cooldown: '冷却中',
-            duplicate_epoch: '已忽略重复 epoch',
-            context_quality: '上下文质量未通过',
-            n3_not_trusted: `N3 尚未通过保守确认 · ${n3StatusLabel(item.n3Status) || '等待后处理'}`,
+            cooldown: '等待下次允许开灯',
+            duplicate_epoch: '已跳过重复片段',
+            context_quality: '连续片段的信号未通过',
+            n3_not_trusted: `N3 未通过额外检查 · ${n3StatusLabel(item.n3Status) || '等待检查'}`,
         };
         if (decision.reason === 'awaiting_consecutive') {
-            setSleepStimulusStatus(`${decision.stage}${useN3ProbabilityTrigger ? ' 概率候选' : ''}连续命中 ${decision.matchedCount} / ${decision.requiredCount}`);
+            setSleepStimulusStatus(`${decision.stage}${useN3ProbabilityTrigger ? ' 估计' : ''}连续满足 ${decision.matchedCount} / ${decision.requiredCount}`);
         } else if (statusLabels[decision.reason]) {
             setSleepStimulusStatus(statusLabels[decision.reason]);
         }
@@ -884,10 +1021,11 @@
 
     async function inferSleepEpoch(input, generation = state.sleepInferenceGeneration) {
         if (!state.sleepModelReady) return;
-        $('realtime-inference-state').textContent = `正在推理 epoch ${input.classifiedEpochIndex + 1}…`;
+        $('realtime-inference-state').textContent = `正在判断第 ${input.classifiedEpochIndex + 1} 段…`;
         try {
             const result = await window.desktopAPI.inferSleepStage(input);
             if (generation !== state.sleepInferenceGeneration) return;
+            state.liveModelError = false;
             const inferenceMode = input.inferenceMode || 'unknown';
             const smoother = state.sleepProbabilitySmoothers[inferenceMode];
             const smoothed = smoother ? smoother.update(result.probabilities) : {
@@ -955,22 +1093,26 @@
                 lightChannels: Array.from(input.lightChannels || []),
             };
             state.sleepHistory.unshift(item);
+            if (inferenceMode === 'causal') {
+                state.livePrediction = { ...item, receivedAt: Date.now() };
+                renderLiveStatus();
+            }
             state.sleepHistory.length = Math.min(state.sleepHistory.length, 120);
             const presentation = sleepStagePresentation(item);
             $('realtime-stage').textContent = targetQuality.ok ? presentation : `${presentation}（质量警告）`;
             const presentationHint = stage === (SleepPostprocess?.UNKNOWN_STAGE || 'UNKNOWN')
                 ? (candidateStage === 'N3'
                     ? (state.sleepStimulusProtocol.n3TriggerMode === 'probability'
-                        ? 'N3 候选，闭环可按概率阈值单独判断' : 'N3 候选，尚未通过保守确认')
-                    : '候选已显示，但本 epoch 不计入有效分期')
-                : '已通过当前分期后处理';
+                        ? '可能是 N3，按设置的概率决定是否开灯' : '可能是 N3，未通过额外检查')
+                    : '暂时无法判断，不计入统计')
+                : '模型已给出结果';
             $('realtime-stage-time').textContent = inferenceMode === 'center'
-                ? `${presentationHint} · 目标 epoch ${input.classifiedEpochIndex + 1} · 中心输出 · 约 ${Math.round(delaySeconds / 60)} 分钟延迟`
-                : `${presentationHint} · 目标 epoch ${input.classifiedEpochIndex + 1} · 当前因果输出 · 每 30 秒更新`;
+                ? `${presentationHint} · 第 ${input.classifiedEpochIndex + 1} 段 · 约 ${Math.round(delaySeconds / 60)} 分钟前`
+                : `${presentationHint} · 第 ${input.classifiedEpochIndex + 1} 段 · 实时分期`;
             $('realtime-inference-state').textContent = inferenceMode === 'center'
-                ? `完成 · 中心输出 ${result.selectedOutputIndex + 1}/${input.temporalContext} · 回顾性验证 · N3 后处理`
-                : `完成 · 当前输出 ${result.selectedOutputIndex + 1}/${input.temporalContext} · 实验性闭环候选 · N3 后处理`;
-            renderSleepProbabilities(smoothed.probabilities);
+                ? '已更新约 5 分钟前的分期'
+                : '已更新实时分期';
+            if (inferenceMode === 'causal') renderSleepProbabilities(smoothed.probabilities, item);
             renderSleepHistory();
             await audit('sleep_stage_inferred', {
                 epochIndex: input.classifiedEpochIndex, stage, confidence,
@@ -991,6 +1133,8 @@
         } catch (error) {
             if (generation !== state.sleepInferenceGeneration) return;
             $('realtime-model').textContent = '模型错误';
+            state.liveModelError = true;
+            renderLiveStatus();
             $('realtime-model-detail').textContent = error.message;
             $('realtime-inference-state').textContent = '推理失败';
             await audit('sleep_stage_inference_failed', { error: error.message }, 'error');
@@ -1007,14 +1151,32 @@
         const epoch = state.sleepPipeline.push(sample, options);
         if (!epoch) {
             if (state.sleepPipeline.current.length % 25 === 0) {
-                $('realtime-progress').textContent = `当前窗口 ${(state.sleepPipeline.progress * 100).toFixed(0)}%`;
+                $('realtime-progress').textContent = `本段收集进度 ${(state.sleepPipeline.progress * 100).toFixed(0)}% · 每段 30 秒`;
             }
             return;
         }
         const buffered = Math.min(epoch.totalEpochs, state.sleepPipeline.temporalContext);
-        $('realtime-epoch').textContent = `${epoch.totalEpochs} epoch`;
-        $('realtime-progress').textContent = `中心窗口 ${buffered} / ${state.sleepPipeline.temporalContext}`;
+        state.liveQuality = epoch.quality;
+        renderLiveStatus();
+        $('realtime-epoch').textContent = `${epoch.totalEpochs} 段`;
+        $('realtime-progress').textContent = `每段 30 秒 · 判断所需数据 ${buffered} / ${state.sleepPipeline.temporalContext} 段`;
         $('realtime-quality').textContent = epoch.quality.ok ? '通过' : '警告';
+        state.badSignalEpochs = epoch.quality.ok ? 0 : state.badSignalEpochs + 1;
+        const healthHint = $('realtime-health-hint');
+        if (healthHint) {
+            healthHint.hidden = false;
+            healthHint.textContent = !epoch.quality.ok
+                ? `${signalReasonLabel(epoch.quality.reason)}，请检查电极和连接；这段数据不会触发光照。`
+                : '信号正常；满足所选分期条件后才会自动开灯。';
+        }
+        if (state.badSignalEpochs === 2) {
+            toast('脑电连续约 1 分钟异常，请检查电极与连接；异常片段不会触发光照。', 'error');
+            void audit('signal_recovery_needed', { reason: epoch.quality.reason, consecutiveBadEpochs: 2 }, 'error');
+        }
+        if (epoch.quality.reason === 'raw_saturation') {
+            $('realtime-quality').textContent = '原始脑电饱和：检查电极、参考与接线';
+            if (state.sleepStimulusActiveChannel) void runUiTask(() => disableSleepStimulus('原始脑电饱和'));
+        }
         const gapDetail = epoch.gapSamples ? ` · 序列缺口 ${epoch.gapSamples} 点` : '';
         const deltaDetail = Number.isFinite(epoch.quality.deltaRatio) ? ` · δ ${(epoch.quality.deltaRatio * 100).toFixed(1)}%` : '';
         const amplitudeDetail = Number.isFinite(epoch.quality.maxAbsUv)
@@ -1023,13 +1185,13 @@
         $('realtime-quality-detail').textContent = `${amplitudeDetail} · SD ${epoch.quality.stdUv.toFixed(2)} µV · P-P ${epoch.quality.peakToPeakUv.toFixed(1)} µV${deltaDetail}${gapDetail}`;
         if (epoch.gapSamples) {
             state.sleepEpochLightChannels.clear();
-            $('realtime-inference-state').textContent = `检测到序列缺口，跳过第 ${epoch.totalEpochs} 个 epoch`;
+            $('realtime-inference-state').textContent = `检测到序列缺口，跳过第 ${epoch.totalEpochs} 段`;
             return;
         }
-        $('realtime-inference-state').textContent = '等待中心验证与当前因果候选';
-        // 中心输出对应约 5 分钟前的目标 epoch，当前 epoch 的光刺激状态不能
-        // 反写到历史目标 epoch；只有当前因果候选在完整、质量通过的 21 epoch
-        // 上才具备实验性闭环资格。
+        $('realtime-inference-state').textContent = '正在更新分期…';
+        // 延后结果对应约 5 分钟前的目标 epoch，当前 epoch 的光照状态不能
+        // 反写到历史目标 epoch；只有实时分期在完整、质量通过的 21 epoch
+        // 上才具备试验性自动光照资格。
         const lightChannels = Array.from(state.sleepEpochLightChannels);
         state.sleepEpochLightChannels.clear();
         const generation = state.sleepInferenceGeneration;
@@ -1071,21 +1233,40 @@
             state.realtimeEnabled = event.target.checked;
             localStorage.setItem('realtimeSleepEnabled', String(state.realtimeEnabled));
             resetRealtimeSleep(true);
-            if (!state.realtimeEnabled) void runUiTask(() => disableSleepStimulus('实时分析已停用'));
+            if (!state.realtimeEnabled) void runUiTask(() => disableSleepStimulus('实时分期已停用'));
         });
         $('sleep-stimulus-save').addEventListener('click', () => runUiTask(async () => {
+            const feedback = $('sleep-settings-feedback');
+            const invalid = [...$('sleep-stimulus-config').querySelectorAll('input[type="number"]')]
+                .find(input => input.getClientRects().length && (!input.value.trim() || !input.checkValidity()));
+            if (invalid) {
+                feedback.dataset.error = 'true';
+                feedback.textContent = `请检查“${invalid.closest('label').innerText.split('\n')[0]}”${invalid.min && invalid.max ? `（${invalid.min}–${invalid.max}）` : ''}。`;
+                invalid.focus();
+                invalid.scrollIntoView({ block: 'center' });
+                return;
+            }
+            const errors = Sleep.validateStimulusProtocol(sleepStimulusProtocolFromForm());
+            if (errors.length) { feedback.dataset.error = 'true'; feedback.textContent = errors.join('；'); return; }
             const protocol = applySleepStimulusProtocol(sleepStimulusProtocolFromForm());
             setSleepStimulusStatus(protocol.enabled ? '参数已保存 · 等待目标分期' : '参数已保存 · 未启用');
             await audit('sleep_stimulus_protocol_saved', { ...protocol, enabled: undefined });
+            $('sleep-stimulus-settings-dialog').close();
+            toast(protocol.enabled ? '参数已保存，将用于后续触发。' : '参数已保存，自动光照尚未开启。');
         }));
+        $('sleep-stimulus-config').addEventListener('input', () => {
+            $('sleep-settings-feedback').dataset.error = 'false';
+            $('sleep-settings-feedback').textContent = '有未保存的修改';
+        });
+        $('sleep-stimulus-cancel').addEventListener('click', () => $('sleep-stimulus-settings-dialog').close());
         $('sleep-stimulus-enabled').addEventListener('change', event => {
             const shouldEnable = event.target.checked;
             event.target.checked = state.sleepStimulusProtocol.enabled;
             void runUiTask(async () => {
                 if (!shouldEnable) return disableSleepStimulus('手动关闭');
-                if (!state.realtimeEnabled) throw new Error('请先启用实时分析');
+                if (!state.realtimeEnabled) throw new Error('请先启用实时分期');
                 if (!state.sleepModelReady) throw new Error('睡眠分期模型尚未就绪');
-                if (!state.connected || !state.eegRunning) throw new Error('请先连接设备并启动 EEG，再启用刺激协议');
+                if (!state.connected || !state.eegRunning) throw new Error('请先连接设备并开始采集，再启用刺激协议');
                 const protocol = applySleepStimulusProtocol(sleepStimulusProtocolFromForm(true));
                 setSleepStimulusStatus(`已启用 · 等待 ${protocol.targetStages.join('/')} · 连续 ${protocol.consecutiveEpochs} 次`);
                 await audit('sleep_stimulus_enabled', protocol);
@@ -1096,7 +1277,7 @@
             const info = await window.desktopAPI.getSleepModelInfo();
             state.sleepModelReady = true;
             $('realtime-model').textContent = '已就绪';
-            $('realtime-model-detail').textContent = `Stage-1 ONNX · 中心验证 + 当前因果候选 · 概率平滑`;
+            $('realtime-model-detail').textContent = 'Stage-1 ONNX · 研究版，实时判断尚未独立验证';
         } catch (error) {
             state.sleepModelReady = false;
             $('realtime-model').textContent = '不可用';
@@ -1146,10 +1327,11 @@
             };
             const processor = new SDK.EegProcessor({
                 sampleRateHz: 250,
-                historyPoints: state.waveformMax,
+                // The renderer owns the display history; unused eight-channel
+                // spectra and impedance estimates need not run on every sample.
+                historyPoints: 256,
                 filter: { enabled: true, preset: 'eeg-display-0p5-45' },
-                fft: { enabled: true, size: 256, updateEvery: 25, maxHz: 60, log10: true },
-                impedance: { preset: 'brainlume-24na-v1' },
+                fft: { enabled: false },
             });
             const sleepModelFilter = new SDK.filters.EegFilterBank(250, 8, SDK.filters.MODEL_TRAINING_PRESET, {
                 initialization: 'zero',
@@ -1161,9 +1343,13 @@
                 if (frame.func !== SDK.FUNC.EEG_RAW) logProtocol('RX', Core.bytesToHex(frame.raw));
             });
             client.on('eeg', handleEegFrame);
+            let protocolErrors = 0;
             client.on('error', error => {
-                logProtocol('ERR', formatProtocolError(error), 'error');
-                audit('protocol_error', { error: error.message, ...protocolErrorContext(error) }, 'error');
+                protocolErrors += 1;
+                if (protocolErrors <= 8 || protocolErrors % 100 === 0) {
+                    logProtocol('ERR', `${formatProtocolError(error)} · 累计 ${protocolErrors} 次`, 'error');
+                    audit('protocol_error', { error: error.message, protocolErrors, ...protocolErrorContext(error) }, 'error');
+                }
             });
             client.on('warning', warning => logProtocol('WARN', warning.message, 'error'));
             await client.connect();
@@ -1259,10 +1445,13 @@
     }
 
     async function handleTransportDisconnected() {
+        clearManualLightTracking();
         if (!state.connected) return;
         planEngine.stopRelative('ble_disconnected');
         state.connected = false;
         state.eegRunning = false;
+        state.deviceEegRunning = false;
+        state.eegStopError = null;
         state.sleepModelFilter = null;
         state.indicatorRunning = false;
         state.indicatorPending = false;
@@ -1283,7 +1472,10 @@
 
     async function queryStatus() {
         const status = await requireClient().getStatus();
-        if (!state.impedanceMode) state.eegRunning = Boolean(status.eegRunning);
+        state.deviceEegRunning = Boolean(status.eegRunning);
+        // A device may still be streaming after reconnecting. Do not claim
+        // that these samples are being saved without an application session.
+        if (!state.impedanceMode && !state.activeSession) state.eegRunning = false;
         state.lightRunning[1] = Boolean(status.light1Running);
         state.lightRunning[2] = Boolean(status.light2Running);
         state.lightStateChannelVerified = { 1: true, 2: true };
@@ -1340,7 +1532,7 @@
         }
         const status = await client.getStatus();
         if (status.eegRunning || state.eegRunning) {
-            await client.stopEeg();
+            await stopEegOnDevice();
             await new Promise(resolve => setTimeout(resolve, 2));
         }
         await client.configureEeg(expected);
@@ -1356,7 +1548,7 @@
     }
 
     async function applyChannel(channel, impedance = false) {
-        if (state.eegRunning && !state.impedanceMode) throw new Error('请先停止 EEG 再切换通道');
+        if (state.eegRunning && !state.impedanceMode) throw new Error('请先停止采集 再切换通道');
         const result = await configureEegVerified(channel, impedance);
         const config = result.config;
         state.selectedChannel = channel;
@@ -1373,12 +1565,17 @@
 
     async function startEeg(options = {}) {
         if (state.eegRunning) return;
+        if (state.deviceEegRunning) await stopEegOnDevice();
         const channel = options.channel || state.selectedChannel;
         await applyChannel(channel, false);
         await beginSession(options.plan || null);
         try {
             await requireClient().startEeg();
             state.eegRunning = true;
+            state.deviceEegRunning = true;
+            state.eegStopError = null;
+            state.liveStartedAt = Date.now();
+            state.lastEegReceivedAt = null;
             state.impedanceMode = false;
             updateEegUi();
             renderNextAction();
@@ -1390,22 +1587,37 @@
         }
     }
 
+    async function stopEegOnDevice() {
+        const client = requireClient();
+        let commandError = null;
+        try { await client.stopEeg(); } catch (error) { commandError = error; }
+        try {
+            const status = await client.getStatus();
+            state.deviceEegRunning = Boolean(status.eegRunning);
+            if (state.deviceEegRunning) throw commandError || new Error('设备仍在采集');
+            state.eegStopError = null;
+        } catch (error) {
+            state.eegStopError = error.message;
+            updateEegUi();
+            throw new Error(`停止未确认，请重试；记录仍保持打开：${error.message}`);
+        }
+    }
+
     async function stopEeg(reason = 'manual') {
-        if (!state.eegRunning && !state.impedanceMode) return;
+        if (!state.eegRunning && !state.impedanceMode && !state.activeSession) return;
         try { await disableSleepStimulus('EEG 已停止'); }
         catch (error) {
             logProtocol('ERR', `解除分期刺激协议：${error.message}`, 'error');
             await audit('sleep_stimulus_disable_failed', { reason, error: error.message }, 'error');
         }
-        try { await requireClient().stopEeg(); } finally {
-            state.eegRunning = false;
-            state.impedanceMode = false;
-            updateEegUi();
-            renderNextAction();
-            addActivity('EEG 已停止');
-            await audit('eeg_stopped', { reason });
-            if (state.activeSession) await finishSession('completed', reason);
-        }
+        await stopEegOnDevice();
+        state.eegRunning = false;
+        state.impedanceMode = false;
+        updateEegUi();
+        renderNextAction();
+        addActivity('脑电采集已停止');
+        await audit('eeg_stopped', { reason });
+        if (state.activeSession) await finishSession('completed', reason);
     }
 
     async function measureImpedance(channel = state.selectedChannel) {
@@ -1429,6 +1641,7 @@
             }
             await audit('impedance_config_verified', { channel, registersHex: Core.bytesToHex(registerReadback.values) });
             state.processor.reset();
+            state.processor.impedance = new SDK.impedance.ImpedanceEstimator({ channelCount: 8, preset: 'brainlume-24na-v1' });
             await client.startEeg();
             const value = await new Promise((resolve, reject) => {
                 const timer = setTimeout(() => {
@@ -1447,10 +1660,11 @@
             await audit('impedance_measured', { channel, kohm: value });
             return value;
         } finally {
-            try { await client.stopEeg(); } catch { /* continue restoration */ }
+            try { await stopEegOnDevice(); }
+            catch (error) { logProtocol('ERR', error.message, 'error'); }
             state.eegRunning = false;
             state.impedanceMode = false;
-            state.processor.reset();
+            if (state.processor) { state.processor.impedance = null; state.processor.reset(); }
             await applyChannel(channel, false).catch(() => {});
             $('impedance-button').disabled = false;
             updateEegUi();
@@ -1514,7 +1728,7 @@
                     status = await requireClient().getStatus();
                     const actualRunning = lightStatusValue(status, channel);
                     if (actualRunning !== expectedRunning) {
-                        const error = new Error(`光刺激 CH${channel} 状态校验失败：期望 ${expectedRunning ? '运行' : '停止'}，实际 ${actualRunning ? '运行' : '停止'}`);
+                        const error = new Error(`光照 CH${channel} 状态校验失败：期望 ${expectedRunning ? '运行' : '停止'}，实际 ${actualRunning ? '运行' : '停止'}`);
                         error.name = 'LightStateMismatchError';
                         error.retryable = true;
                         throw error;
@@ -1556,28 +1770,46 @@
             renderLightStimulusState();
             renderNextAction();
         }
-        throw lastError || new Error(`光刺激 CH${channel} ${operation}失败`);
+        throw lastError || new Error(`光照 CH${channel} ${operation}失败`);
     }
 
     async function configureLight(channel, config, context = {}) {
+        if (channel === 3) {
+            for (const output of [1, 2]) await configureLight(output, config, context);
+            return;
+        }
         await runLightOperation('configure', channel, () => requireClient().setLightConfig(channel, config), {
             context, detail: { frequencyHz: config.frequencyHz, durationMs: config.durationMs, powerPercent: config.powerPercent },
         });
         await audit('light_configured', { channel, ...config, ...lightContext(context) });
-        addActivity(`光刺激 CH${channel}：${config.frequencyHz}Hz / ${config.powerPercent}%`);
+        addActivity(`光照 CH${channel}：${config.frequencyHz}Hz / ${config.powerPercent}%`);
     }
 
     async function startLight(channel, context = {}) {
+        if (channel === 3) {
+            for (const output of [1, 2]) await startLight(output, context);
+            return;
+        }
         await runLightOperation('start', channel, () => requireClient().startLight(channel), {
             context, expectedRunning: true,
         });
         await audit('light_started', { channel, verified: true, ...lightContext(context) });
-        addActivity(`光刺激 CH${channel} 已启动`);
+        addActivity(`光照 CH${channel} 已启动`);
     }
 
     async function stopLight(channel, context = {}) {
+        if (channel === 3) {
+            const failures = [];
+            // Attempt both stops even if the first output does not respond.
+            for (const output of [1, 2]) {
+                try { await stopLight(output, context); }
+                catch (error) { failures.push(error); }
+            }
+            if (failures.length) throw new AggregateError(failures, '全部通道停止未完全确认');
+            return;
+        }
         if (!state.connected) {
-            const error = new Error(`设备未连接，无法停止光刺激 CH${channel}`);
+            const error = new Error(`设备未连接，无法停止光照 CH${channel}`);
             await audit('light_stop_failed', { channel, ...lightContext(context), error: error.message }, 'error');
             throw error;
         }
@@ -1585,10 +1817,11 @@
             context, expectedRunning: false,
         });
         await audit('light_stopped', { channel, verified: true, ...lightContext(context) });
-        if (!context.quiet) addActivity(`光刺激 CH${channel} 已停止`);
+        if (!context.quiet) addActivity(`光照 CH${channel} 已停止`);
     }
 
     async function performSafeStop(reason = 'manual') {
+        clearManualLightTracking();
         planEngine.stopRelative(reason);
         await disableSleepStimulus(reason, false);
         if (!state.connected) {
@@ -1601,17 +1834,25 @@
             const output = [];
             for (const channel of [1, 2]) {
                 try { await stopLight(channel, { source: 'safe_stop', reason, quiet: true }); }
-                catch (error) { output.push({ channel, error: error.message }); logProtocol('ERR', `停止光刺激 CH${channel}：${error.message}`, 'error'); }
+                catch (error) { output.push({ channel, error: error.message }); logProtocol('ERR', `停止光照 CH${channel}：${error.message}`, 'error'); }
             }
             return output;
         });
-        try { await requireClient().stopEeg(); } catch (error) { logProtocol('ERR', `停止 EEG：${error.message}`, 'error'); }
-        state.eegRunning = false;
-        state.impedanceMode = false;
-        if (state.activeSession) await finishSession('interrupted', reason);
+        try {
+            await stopEegOnDevice();
+            state.eegRunning = false;
+            state.impedanceMode = false;
+            if (state.activeSession) await finishSession('interrupted', reason);
+        } catch (error) {
+            failures.push({ operation: 'eeg_stop_or_save', error: error.message });
+            logProtocol('ERR', `停止采集或保存失败：${error.message}`, 'error');
+        }
         updateEegUi();
-        addActivity('已执行全部安全停止');
-        if (failures.length) await audit('safe_stop_incomplete', { reason, failures }, 'error');
+        addActivity(failures.length ? '停止未完全确认，请重试' : '光照和采集已停止');
+        if (failures.length) {
+            toast('停止或保存未完成，请检查设备和磁盘后重试。', 'error');
+            await audit('safe_stop_incomplete', { reason, failures }, 'error');
+        }
         else await audit('safe_stop_completed', { reason });
     }
 
@@ -1629,6 +1870,8 @@
         state.edfQueue.length = 0;
         state.edfFlushPromise = Promise.resolve();
         state.sessionEventPromise = Promise.resolve();
+        state.sessionFinishPromise = null;
+        state.recordingWriteError = null;
         state.sessionStartedAt = performance.now();
         state.activeSession = await window.desktopAPI.startSession({
             id,
@@ -1638,13 +1881,15 @@
             deviceId: state.deviceInfo?.deviceId ? Core.bytesToHex(state.deviceInfo.deviceId) : (state.transport?.id || ''),
             selectedChannel: state.selectedChannel,
             sampleRateHz: 250,
-            appVersion: '0.5.1',
+            appVersion: '0.6.0',
+            rawStorageVersion: 1,
         });
         updateEegUi();
         return state.activeSession;
     }
 
     function handleEegFrame(result, frame) {
+        state.lastEegReceivedAt = Date.now();
         const channelIndex = state.selectedChannel - 1;
         const previousSeq = Number(state.lastEeg?.seq);
         const currentSeq = Number(result.seq);
@@ -1666,11 +1911,11 @@
             gain: state.processor?.options?.gains?.[channelIndex] || 24,
         });
         state.waveform.push(result.filteredMicrovolts[channelIndex]);
-        if (state.eegRunning && !state.impedanceMode) handleRealtimeSleepSample(modelFilteredMicrovolts, { seqGap });
+        if (state.eegRunning && !state.impedanceMode) handleRealtimeSleepSample(modelFilteredMicrovolts, { seqGap, rawCode });
         if (state.waveform.length > state.waveformMax) state.waveform.splice(0, state.waveform.length - state.waveformMax);
         state.drawDirty = true;
         if (state.activeSession && !state.impedanceMode) {
-            state.edfQueue.push(result.rawMicrovolts[channelIndex]);
+            state.edfQueue.push({ rawCode, seq: result.seq, elapsedMs: Math.max(0, performance.now() - state.sessionStartedAt) });
             if (seqGap > 0) {
                 const sessionId = state.activeSession.id;
                 state.sessionEventPromise = state.sessionEventPromise
@@ -1696,25 +1941,38 @@
         const sessionId = state.activeSession.id;
         const samples = state.edfQueue.splice(0);
         state.edfFlushPromise = state.edfFlushPromise
-            .then(() => window.desktopAPI.appendSessionSamples(sessionId, samples))
-            .catch(async error => {
+            .then(() => state.recordingWriteError ? undefined : window.desktopAPI.appendSessionSamples(sessionId, samples))
+            .catch(error => {
+                state.recordingWriteError = error;
                 logProtocol('ERR', `EDF 写入失败：${error.message}`, 'error');
-                await safeStop('edf_write_failed');
+                toast('数据保存失败，正在停止采集；请检查磁盘空间。', 'error');
+                // finishSession waits for this flush. Awaiting safeStop here
+                // would make the two promises wait forever for each other.
+                queueMicrotask(() => { void safeStop('edf_write_failed').catch(stopError => {
+                    logProtocol('ERR', `保存失败后的停止未完成：${stopError.message}`, 'error');
+                }); });
             });
         return state.edfFlushPromise;
     }
 
     async function finishSession(status, reason) {
+        if (state.sessionFinishPromise) return state.sessionFinishPromise;
         if (!state.activeSession) return;
         const session = state.activeSession;
-        await flushEdfQueue();
-        await state.edfFlushPromise;
-        await state.sessionEventPromise;
-        const result = await window.desktopAPI.stopSession(session.id, status, reason);
-        state.activeSession = null;
-        updateEegUi();
-        await loadSessions();
-        if (result) addActivity(`记录已保存：${result.rows} 样本 · EDF`);
+        state.sessionFinishPromise = (async () => {
+            await flushEdfQueue();
+            await state.edfFlushPromise;
+            await state.sessionEventPromise;
+            const result = await window.desktopAPI.stopSession(session.id,
+                state.recordingWriteError ? 'failed' : status,
+                state.recordingWriteError ? 'edf_write_failed' : reason);
+            state.activeSession = null;
+            updateEegUi();
+            await loadSessions();
+            if (result) addActivity(state.recordingWriteError ? '保存中断，已保留可用数据，请检查磁盘。'
+                : `记录已保存：${result.rows} 样本 · ${result.rawDataFile ? '完整精度原始记录 + EDF' : 'EDF'}`);
+        })().finally(() => { state.sessionFinishPromise = null; });
+        return state.sessionFinishPromise;
     }
 
     async function executePlanAction(plan, action) {
@@ -1728,14 +1986,14 @@
         case 'eeg_stop': await stopEeg(`plan:${plan.id}`); break;
         case 'light_start':
         case 'light_stop':
-            if (!manualStimulusSourceAvailable()) throw new Error('当前控制方式不包含手动 / 方案光刺激');
+            if (!manualStimulusSourceAvailable()) throw new Error('当前控制方式不包含手动 / 方案光照');
             await withLightLease(async () => {
                 if (action.type === 'light_start') {
                     await preemptSleepStimulus('时间方案刺激开始');
-                    if (state.lightRunning[1] || state.lightRunning[2]) throw new Error('已有光刺激运行，方案动作未启动');
+                    if (state.lightRunning[1] || state.lightRunning[2]) throw new Error('已有光照运行，方案动作未启动');
                     await configureLight(action.lightChannel || 1, action.light, context);
                     await startLight(action.lightChannel || 1, context);
-                } else if (state.sleepStimulusActiveChannel === (action.lightChannel || 1)) {
+                } else if (state.sleepStimulusActiveChannel === 3 || state.sleepStimulusActiveChannel === (action.lightChannel || 1)) {
                     await preemptSleepStimulus('时间方案停止刺激');
                 } else {
                     await stopLight(action.lightChannel || 1, context);
@@ -1940,7 +2198,7 @@
     function renderPlans() {
         const list = $('plan-list');
         if (!state.plans.length) {
-            list.innerHTML = '<div class="empty-state">尚未创建方案。新建一个默认不发光的纯 EEG 采集时间轴；需要时再手动添加光刺激动作。</div>';
+            list.innerHTML = '<div class="empty-state">尚未创建方案。新建一个默认不发光的纯 EEG 采集时间轴；需要时再手动添加光照动作。</div>';
             return;
         }
         list.innerHTML = state.plans.map(plan => {
@@ -2021,9 +2279,9 @@
             const isLight = action.type === 'light_start' || action.type === 'light_stop';
             const extra = action.type === 'light_start'
                 ? `<div class="action-extra">
-                    <label class="action-parameter"><span>频率 (Hz)</span><input class="action-frequency" type="number" min="1" max="100" value="${action.light?.frequencyHz ?? 10}" aria-label="光刺激频率 Hz"></label>
-                    <label class="action-parameter fixed"><span>时间 (ms，固定)</span><input class="action-duration" type="number" value="0" readonly aria-readonly="true" aria-label="光刺激时间固定为 0 ms"></label>
-                    <label class="action-parameter"><span>功率/占空比 (%)</span><input class="action-power" type="number" min="0" max="100" value="${action.light?.powerPercent ?? 5}" aria-label="光刺激功率或占空比百分比"></label>
+                    <label class="action-parameter"><span>频率 (Hz)</span><input class="action-frequency" type="number" min="1" max="100" value="${action.light?.frequencyHz ?? 10}" aria-label="光照频率 Hz"></label>
+                    <label class="action-parameter fixed"><span>时间 (ms，固定)</span><input class="action-duration" type="number" value="0" readonly aria-readonly="true" aria-label="光照时间固定为 0 ms"></label>
+                    <label class="action-parameter"><span>功率/占空比 (%)</span><input class="action-power" type="number" min="0" max="100" value="${action.light?.powerPercent ?? 5}" aria-label="光照功率或占空比百分比"></label>
                 </div>`
                 : '<span></span>';
             const scheduleInput = state.planEditingMode === 'relative'
@@ -2032,7 +2290,7 @@
             return `<div class="action-row" data-index="${index}">
                 ${scheduleInput}
                 <select class="action-type">${Core.ACTION_TYPES.map(type => `<option value="${type}" ${type === action.type ? 'selected' : ''}>${ACTION_LABELS[type]}</option>`).join('')}</select>
-                <select class="action-light-channel" disabled aria-readonly="true" aria-label="光刺激通道固定为 CH2" title="方案光刺激通道固定为 CH2"><option value="2" selected>光 CH2（固定）</option></select>
+                <select class="action-light-channel" disabled aria-readonly="true" aria-label="光照通道固定为 CH2" title="方案光照通道固定为 CH2"><option value="2" selected>光 CH2（固定）</option></select>
                 ${extra}
                 <button type="button" class="icon-button remove-action" title="删除动作">×</button>
             </div>`;
@@ -2117,7 +2375,7 @@
         if (autoUpload) autoUpload.checked = config.autoUploadStimulated !== false;
         const status = $('github-sync-status');
         if (status) {
-            if (sync.tokenStored && !sync.encryptionAvailable) status.textContent = '安全存储不可用';
+            if (sync.tokenStored && sync.encryptionAvailable === false) status.textContent = '安全存储不可用';
             else if (sync.tokenStored) status.textContent = '已配置令牌';
             else status.textContent = '未配置';
         }
@@ -2145,9 +2403,9 @@
         }
         body.innerHTML = state.sessions.map(session => `<tr>
             <td>${escapeHtml(formatDateTime(session.startedAt))}</td><td>CH${session.selectedChannel}</td><td>${escapeHtml(session.planName || '手动采集')}</td>
-            <td>${Number(session.rows || 0).toLocaleString()}</td><td title="${recordingSampleRate(session)} Hz 有效数据">${Core.formatDuration(sessionDurationSeconds(session))}</td><td>${session.storageFormat === 'EDF' ? 'EDF' : 'CSV（旧版）'}</td><td><span class="state-badge ${session.status === 'completed' ? '' : 'off'}">${escapeHtml(session.status)}</span></td>
+            <td>${Number(session.rows || 0).toLocaleString()}</td><td title="${recordingSampleRate(session)} Hz 有效数据">${Core.formatDuration(sessionDurationSeconds(session))}</td><td>${session.storageFormat === 'EDF' ? 'EDF' : 'CSV（旧版）'}</td><td><span class="state-badge ${session.status === 'completed' ? '' : 'off'}">${({ completed: '已完成', recording: '采集中', interrupted: '已中断', failed: '失败', error: '出错' })[session.status] || '已停止'}</span></td>
             ${(() => { const upload = githubUploadPresentation(session); return `<td><span class="github-upload-badge ${upload.tone}" title="${escapeHtml(upload.detail)}">${escapeHtml(upload.label)}</span></td>`; })()}
-            <td><button class="button text analyze-session" data-session-id="${escapeHtml(session.id)}">分析</button><button class="button text upload-session-github" data-session-id="${escapeHtml(session.id)}">上传 EDF+events</button><button class="button text reveal-session" data-directory="${escapeHtml(session.directory)}">打开目录</button></td>
+            <td><button class="button text analyze-session" data-session-id="${escapeHtml(session.id)}">查看分析</button><button class="button text upload-session-github" data-session-id="${escapeHtml(session.id)}">备份记录</button><button class="button text reveal-session" data-directory="${escapeHtml(session.directory)}">打开文件夹</button></td>
         </tr>`).join('');
     }
 
@@ -2163,7 +2421,7 @@
         const titles = {
             device: ['DEVICE WORKSPACE', '设备总览'],
             records: ['RAW DATA ARCHIVE', '采集记录'],
-            realtime: ['REALTIME SLEEP STAGING', '实时预处理与睡眠分期'],
+            realtime: ['SLEEP STAGING', '实时分期'],
             debug: ['ENGINEERING TOOLS', '设备调试'],
         };
         document.querySelectorAll('.nav-item').forEach(button => button.addEventListener('click', () => {
@@ -2192,7 +2450,15 @@
     }
 
     function setupEvents() {
+        $('realtime-history-mode').addEventListener('change', renderSleepHistory);
+        $('simple-manual-light').addEventListener('click', openManualStimulusSettings);
         $('connect-button').addEventListener('click', () => runUiTask(connectBle));
+        $('simple-n3-toggle').addEventListener('click', () => runUiTask(toggleSimpleN3));
+        $('simple-n3-settings').addEventListener('click', () => runUiTask(async () => {
+            if (!modelStimulusSourceAvailable()) await changeStimulusControlMode('model');
+            openSleepStimulusSettings();
+        }));
+        $('advanced-plan-manager').addEventListener('click', openHomePlanManager);
         $('indicator-toggle-button').addEventListener('click', () => runUiTask(toggleIndicator));
         $('wave-x-range').addEventListener('change', event => {
             const display = Core.normalizeWaveformDisplay({
@@ -2223,7 +2489,7 @@
                 throw error;
             }
         }));
-        $('eeg-toggle-button').addEventListener('click', () => runUiTask(() => state.eegRunning ? stopEeg('manual') : startEeg()));
+        $('eeg-toggle-button').addEventListener('click', () => runUiTask(() => state.eegRunning || state.activeSession ? stopEeg('manual') : startEeg()));
         $('impedance-button').addEventListener('click', () => runUiTask(() => measureImpedance()));
         $('status-button').addEventListener('click', () => runUiTask(queryStatus));
         $('safe-stop-button').addEventListener('click', () => runUiTask(() => safeStop('manual')));
@@ -2330,7 +2596,7 @@
             }
             const dates = [...new Set(pending.map(candidate => candidate.date))].join('、');
             const eventsCount = pending.filter(candidate => candidate.hasEvents).length;
-            const confirmed = window.confirm(`将同步 ${pending.length} 条今天以前的 EEG 记录（${dates}）。其中 ${eventsCount} 条包含可用 events，将与 EDF 一并上传。原始 EEG 只会进入私有 GitHub 仓库，是否继续？`);
+            const confirmed = window.confirm(`将同步 ${pending.length} 条今天以前的 EEG 记录（${dates}）。其中 ${eventsCount} 条包含可用 events，将与 EDF 一并上传。原始脑电 只会进入私有 GitHub 仓库，是否继续？`);
             if (!confirmed) return;
             const result = await window.desktopAPI.uploadGithubHistory({ sessionIds: pending.map(candidate => candidate.id) });
             state.githubSync = result;
@@ -2383,8 +2649,8 @@
         });
         $('sleep-stimulus-n3-enabled').addEventListener('change', () => renderSleepStimulusTriggerFields());
         $('sleep-stimulus-n3-mode').addEventListener('change', () => renderSleepStimulusTriggerFields());
-        $('home-light-start').addEventListener('click', () => runUiTask(() => startManualLight(2, homeLightConfigFromInputs(), { source: 'manual_home' })));
-        $('home-light-stop').addEventListener('click', () => runUiTask(() => stopManualLight(2, { source: 'manual_home', reason: 'home_manual_stop' })));
+        $('home-light-start').addEventListener('click', () => runUiTask(() => startManualLight(Number($('home-light-channel').value), homeLightConfigFromInputs(), { source: 'manual_home' })));
+        $('home-light-stop').addEventListener('click', () => runUiTask(() => stopManualLight(Number($('home-light-channel').value), { source: 'manual_home', reason: 'home_manual_stop' })));
         $('light-config-button').addEventListener('click', () => runUiTask(() => configureLight(Number($('light-channel').value), lightConfigFromInputs(), { source: 'manual_debug' })));
         $('light-start-button').addEventListener('click', () => runUiTask(() => startManualLight(Number($('light-channel').value), null, { source: 'manual_debug' })));
         $('light-stop-button').addEventListener('click', () => runUiTask(() => stopManualLight(Number($('light-channel').value), { source: 'manual_debug', reason: 'debug_manual_stop' })));
@@ -2410,15 +2676,15 @@
     function homeLightConfigFromInputs() {
         return {
             frequencyHz: Number($('home-light-frequency').value),
-            durationMs: Number($('home-light-duration').value),
+            durationMs: Number($('home-light-duration').value) * 1000,
             powerPercent: Number($('home-light-power').value),
         };
     }
 
     function validateManualLightConfig(config) {
-        if (!(config.frequencyHz >= 1 && config.frequencyHz <= 100)) throw new Error('光刺激频率必须为 1~100 Hz');
-        if (!(config.durationMs >= 1)) throw new Error('手动光刺激时长必须大于 0 ms');
-        if (!(config.powerPercent >= 0 && config.powerPercent <= 100)) throw new Error('光刺激功率必须为 0~100%');
+        if (!(config.frequencyHz >= 1 && config.frequencyHz <= 100)) throw new Error('光照频率必须为 1~100 Hz');
+        if (!Number.isFinite(config.durationMs) || !(config.durationMs >= 1 && config.durationMs <= 3600000)) throw new Error('手动光照时长必须大于 0，且不超过 3600 秒');
+        if (!(config.powerPercent >= 0 && config.powerPercent <= 100)) throw new Error('光照功率必须为 0~100%');
         return {
             frequencyHz: Math.round(config.frequencyHz),
             durationMs: Math.round(config.durationMs),
@@ -2426,26 +2692,54 @@
         };
     }
 
+    function clearManualLightTracking() {
+        if (state.manualLightStopTimer) clearTimeout(state.manualLightStopTimer);
+        state.manualLightStopTimer = null;
+        state.manualLightChannel = null;
+        state.manualLightUntil = 0;
+    }
+
     async function startManualLight(channel, config = null, context = {}) {
         return withLightLease(async () => {
-            if (!manualStimulusSourceAvailable()) throw new Error('当前控制方式不包含手动 / 方案光刺激');
+            if (!manualStimulusSourceAvailable()) throw new Error('当前控制方式不包含手动 / 方案光照');
             requireClient();
-            if (state.sleepStimulusActiveChannel) await preemptSleepStimulus('手动刺激请求');
-            if (state.lightRunning[1] || state.lightRunning[2]) throw new Error('已有光刺激运行，请先停止后再启动');
             const normalizedConfig = config ? validateManualLightConfig(config) : null;
-            if (normalizedConfig) await configureLight(channel, normalizedConfig, context);
-            await startLight(channel, context);
+            if (state.sleepStimulusActiveChannel) await preemptSleepStimulus('手动光照请求');
+            if (state.lightRunning[1] || state.lightRunning[2]) throw new Error('已有光照运行，请先停止后再启动');
+            if (state.sleepStimulusProtocol.enabled) await disableSleepStimulus('切换为手动光照', false);
+            try {
+                if (normalizedConfig) await configureLight(channel, normalizedConfig, context);
+                await startLight(channel, context);
+            } catch (error) {
+                try { await stopLight(channel, { ...context, quiet: true, reason: 'manual_start_failed' }); }
+                catch (stopError) { await audit('manual_light_stop_unconfirmed', {channel,error:stopError.message}, 'error'); }
+                throw error;
+            }
+            state.manualLightChannel = channel;
+            state.manualLightUntil = normalizedConfig ? Date.now() + normalizedConfig.durationMs : 0;
+            const activeUntil = state.manualLightUntil;
+            if (normalizedConfig) state.manualLightStopTimer = setTimeout(() => {
+                if (state.manualLightChannel !== channel || state.manualLightUntil !== activeUntil) return;
+                void runUiTask(() => stopManualLight(channel, { source: 'manual_home', reason: 'duration_elapsed', quiet: true }));
+            }, normalizedConfig.durationMs);
+            renderStimulusSources();
+            renderSimpleWorkflow();
         });
     }
 
     async function stopManualLight(channel, context = {}) {
         return withLightLease(async () => {
             requireClient();
-            if (state.sleepStimulusActiveChannel === channel) {
+            channel = state.manualLightChannel || channel;
+            if (state.sleepStimulusActiveChannel) {
                 await preemptSleepStimulus('手动停止');
+                await disableSleepStimulus('手动停止', false);
                 return;
             }
             await stopLight(channel, context);
+            clearManualLightTracking();
+            renderStimulusSources();
+            renderSimpleWorkflow();
         });
     }
 
@@ -2573,7 +2867,7 @@
     }
 
     async function runDeviceDiagnostic() {
-        const report = { startedAt: Core.formatLocalIso(), appVersion: '0.5.1', sdkVersion: SDK.VERSION, success: false };
+        const report = { startedAt: Core.formatLocalIso(), appVersion: '0.6.0', sdkVersion: SDK.VERSION, success: false };
         try {
             if (!await connectBle()) throw new Error('BLE connection failed');
             report.device = {
@@ -2628,24 +2922,44 @@
         }
     }
 
+    function renderHistoryReplay(status) {
+        $('history-replay-start').disabled = Boolean(status.running);
+        $('history-replay-cancel').hidden = !status.running;
+        $('history-replay-open').disabled = Boolean(status.running || !status.output);
+        const phases = { read: '读取记录', replay: '重算实时分期', yasa: 'YASA 重新分期', record_complete: '已完成' };
+        if (status.running) $('history-replay-status').textContent = `${phases[status.phase] || '准备中'} · ${status.index || 0} / ${status.total || '--'} 条${status.epochs ? ` · 当前 ${status.epochs} 个片段` : ''}`;
+        else if (status.phase === 'error') $('history-replay-status').textContent = `回放失败：${status.error}`;
+        else if (status.phase === 'cancelled') $('history-replay-status').textContent = '已停止回放，可查看已完成的部分。';
+        else if (status.phase === 'done') $('history-replay-status').textContent = `已完成 ${status.records} 条 · ${Number(status.hours).toFixed(1)} 小时数据 · 用时 ${Math.round(status.seconds)} 秒${status.failures ? ` · ${status.failures} 条失败，见报告` : ''}。全程未开灯。`;
+        else if (status.output) $('history-replay-status').textContent = '已有回放报告。修改光照条件后，可以再次回放。';
+    }
+
     async function init() {
-        if (!SDK || !Core || !Sleep) throw new Error('BrainLume SDK 或实时分析模块加载失败');
+        if (!SDK || !Core || !Sleep) throw new Error('BrainLume SDK 或实时分期模块加载失败');
         populateChannelSelects();
         setupNavigation();
         setupBleChooser();
         setupEvents();
+        $('history-replay-start').addEventListener('click', () => runUiTask(async () => {
+            renderHistoryReplay(await window.desktopAPI.startHistoryReplay(state.sleepStimulusProtocol));
+        }));
+        $('history-replay-cancel').addEventListener('click', () => runUiTask(() => window.desktopAPI.cancelHistoryReplay()));
+        $('history-replay-open').addEventListener('click', () => runUiTask(() => window.desktopAPI.openHistoryReplayReport()));
+        window.desktopAPI.onHistoryReplayProgress(renderHistoryReplay);
+        renderHistoryReplay(await window.desktopAPI.getHistoryReplayStatus());
         updateConnectionUi();
         updateEegUi();
         await setupRealtimeSleep();
         startWaveformLoop();
-        await Promise.all([loadPlans(), loadSessions(), loadGithubSync()]);
-        planEngine.start();
-        state.relativePlanRefreshTimer = setInterval(() => { if (planEngine.getRelativeStatus()) renderNextAction(); }, 500);
+        // Keep old plans on disk for historical records, but do not load or run
+        // the legacy scheduler in the N3-only workflow.
+        await Promise.all([loadSessions(), loadGithubSync()]);
         state.streamMetricsTimer = setInterval(() => {
             updateStreamMetricsUi();
+            renderLiveStatus();
             if (state.activeSession) updateEegUi();
         }, 500);
-        await audit('app_started', { version: '0.5.1', sdkVersion: SDK.VERSION });
+        await audit('app_started', { version: '0.6.0', sdkVersion: SDK.VERSION });
         if (window.desktopAPI.getLaunchMode() === 'device-diagnostic') {
             $('header-status').textContent = 'PRESS ANY KEY TO DIAGNOSE';
             window.addEventListener('keydown', () => runDeviceDiagnostic(), { once: true });

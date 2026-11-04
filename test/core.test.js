@@ -232,30 +232,30 @@ test('stimulus sources stay independent while legacy source helpers remain compa
     assert.match(html, /id="sleep-stimulus-settings-dialog"/);
     assert.match(html, /id="combined-model-settings"/);
     assert.match(html, /id="combined-manual-settings"/);
-    assert.ok(html.indexOf('id="next-action"') < html.indexOf('id="impedance-button"'));
+    assert.ok(html.indexOf('id="impedance-button"') < html.indexOf('id="next-action"'));
     assert.ok(html.indexOf('id="impedance-button"') < html.indexOf('id="home-stimulus-control-title"'));
     assert.doesNotMatch(html, /id="realtime-open-stimulus-settings"/);
     assert.doesNotMatch(html, /class="realtime-stimulus-section"/);
     assert.match(html, /实时分期/);
-    assert.match(html, /这里只看实时 EEG、分期概率和历史/);
+    assert.match(html, /采集和光照请在“设备”页操作/);
     assert.match(html, /id="sleep-stimulus-n3-mode-field"/);
     assert.match(html, /id="sleep-stimulus-n3-probability-field"/);
     assert.match(html, /id="sleep-stimulus-n3-confidence-field"/);
     assert.match(html, /id="sleep-stimulus-other-confidence-field"/);
     assert.match(html, /id="sleep-stimulus-trigger-summary"/);
-    assert.match(html, /N3 实时触发/);
-    assert.match(html, /其他睡眠分期候选刺激（实验设置）/);
+    assert.match(html, /目标分期（可多选）/);
+    assert.match(html, /id="target-stage-selector"/);
     assert.equal((html.match(/id="sleep-stimulus-confidence-field"/g) || []).length, 0);
     assert.equal((html.match(/id="sleep-stimulus-confidence"/g) || []).length, 0);
-    assert.match(html, /手动 \/ 方案刺激/);
-    assert.match(html, /中心回顾输出和离线 YASA 结果永远不会触发光刺激/);
+    assert.match(html, /分期自动光照参数/);
+    assert.match(html, /回看结果、记录分析不会开灯/);
     assert.doesNotMatch(html, /id="model-acquisition-plan-note"/);
     assert.match(app, /光 CH2（固定）/);
     assert.match(app, /function renderStimulusModeCard/);
     assert.match(app, /const manualInputFields = \['home-light-frequency', 'home-light-duration', 'home-light-power'\]/);
     assert.match(app, /manualStartButton\.disabled = !manualAllowed \|\| !connected/);
     assert.match(app, /function renderSleepStimulusTriggerFields/);
-    assert.match(app, /N3 候选阈值/);
+    assert.match(app, /N3 概率 ≥/);
     assert.match(app, /function openSleepStimulusSettings/);
     assert.match(app, /function openManualStimulusSettings/);
     assert.match(app, /function openStimulusSettingsForMode/);
@@ -452,7 +452,7 @@ test('device realtime waveform shows only the preprocessed EEG stream', () => {
     const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.html'), 'utf8');
     const css = fs.readFileSync(path.join(__dirname, '..', 'src', 'styles.css'), 'utf8');
     const app = fs.readFileSync(path.join(__dirname, '..', 'src', 'app.js'), 'utf8');
-    assert.match(html, /CH2 预处理实时波形/);
+    assert.match(html, /CH2 实时脑电/);
     assert.match(html, /id="eeg-canvas"/);
     assert.match(html, /id="wave-x-range"/);
     assert.match(html, /id="wave-refresh-rate"/);
@@ -462,7 +462,7 @@ test('device realtime waveform shows only the preprocessed EEG stream', () => {
     for (const seconds of [5, 10, 20, 30, 60]) {
         assert.match(html, new RegExp(`<option value="${seconds}"`));
     }
-    assert.match(html, /0\.5–45Hz \+ 50Hz 陷波/);
+    assert.match(html, /已过滤部分干扰，原始数据另行保存/);
     assert.doesNotMatch(html, /raw-eeg-canvas|原始 EEG 预览|raw-wave-range|raw-wave-value/);
     assert.doesNotMatch(app, /rawWaveform/);
     assert.match(app, /result\.filteredMicrovolts\[channelIndex\]/);
@@ -596,32 +596,33 @@ test('realtime page exposes a 30-second sleep-stage stimulus protocol with safet
     assert.match(html, /id="realtime-light-detail"/);
     assert.match(html, /id="sleep-stimulus-device-state"/);
     assert.match(html, /id="sleep-stimulus-shadow-mode"/);
-    assert.match(html, /<th>光刺激<\/th>/);
+    assert.match(html, /<th>光照<\/th>/);
     assert.match(app, /function renderLightStimulusState\(\)/);
     assert.match(app, /lightStateVerified/);
     assert.match(app, /sleepEpochLightChannels/);
     assert.match(app, /onlineInferenceInput\(\)/);
     assert.match(app, /sleepInferenceGeneration/);
-    assert.match(html, /当前因果候选从首个 epoch 开始显示/);
-    assert.match(html, /实时模型候选/);
-    assert.match(html, /候选概率达到阈值/);
-    assert.match(html, /其他睡眠分期候选刺激（实验设置）/);
+    assert.match(html, /自动光照需先收满约 10\.5 分钟的连续合格数据/);
+    assert.match(html, /仅实时分期可开灯/);
+    assert.match(html, /按 N3 概率判断/);
+    assert.match(html, /同一分期持续满足条件才开灯/);
     assert.match(html, /sleep-stage-postprocess\.js/);
-    assert.match(html, /保守后处理/);
+    assert.match(html, /增加一次 N3 检查/);
     assert.match(app, /sleepN3Postprocessors/);
     assert.match(app, /n3Postprocessed/);
 });
 
 test('user-visible product name is Cao Cao while the historical data directory stays compatible', () => {
+    const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
     const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.html'), 'utf8');
     const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
     const report = fs.readFileSync(path.join(__dirname, '..', 'src', 'analysis-report.js'), 'utf8');
     const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
-    assert.match(html, /<title>曹操 v0\.5\.1<\/title>/);
-    assert.match(html, /<strong>曹操<\/strong><span>EEG 闭环平台<\/span>/);
+    assert.ok(html.includes(`<title>曹操 v${packageJson.version}</title>`));
+    assert.match(html, /<strong>曹操<\/strong><span>脑电采集与光照<\/span>/);
     assert.match(main, /title:\s*'曹操'/);
     assert.match(main, /'BrainLume Desktop'/);
-    assert.match(report, /曹操 v0\.5\.1/);
+    assert.ok(report.includes(`曹操 v${packageJson.version}`));
     assert.match(readme, /^# 曹操$/m);
 });
 

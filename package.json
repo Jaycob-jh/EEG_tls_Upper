@@ -1,7 +1,7 @@
 {
   "name": "brainlume-desktop",
   "productName": "曹操",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "BrainLume CH2 EEG and light-stimulation desktop controller",
   "main": "main.js",
   "private": true,
@@ -14,6 +14,7 @@
     "capture:smoke": "electron . --capture-smoke",
     "diagnose:device": "electron . --device-diagnostic",
     "replay:sleep-staging": "node scripts/replay-sleep-staging.js",
+    "replay:recordings": "node scripts/replay-recordings.js",
     "evaluate:n3": "node scripts/evaluate-n3-postprocess.js",
     "audit:realtime-input": "node scripts/audit-realtime-input.js",
     "audit:realtime-inference": "node scripts/audit-realtime-inference.js",
@@ -21,7 +22,9 @@
     "audit:quality-thresholds": "node scripts/audit-quality-thresholds.js",
     "debug:device": "node debug-cli.js",
     "check": "node --check main.js && node --check preload.js && node --check analysis-preload.js && node --check debug-cli.js && node --check analysis-worker.js && node --check sleep-stage-worker.js && node --check src/edf.js && node --check src/core.js && node --check src/analysis-core.js && node --check src/analysis-report.js && node --check src/analysis-ui.js && node --check src/analysis-window.js && node --check src/realtime-sleep.js && node --check src/sleep-stage-postprocess.js && node --check src/sleep-model-integrity.js && node --check src/transport.js && node --check src/github-sync.js && node --check src/app.js && node --check src/debug.js && node --check scripts/audit-sleep-model.js && node --check scripts/audit-quality-thresholds.js",
-    "test": "node scripts/run-tests.js"
+    "test": "node scripts/run-tests.js",
+    "test:workflow": "node scripts/test-workflow.js",
+    "test:gui": "node scripts/test-workflow.js --gui-only"
   },
   "devDependencies": {
     "@electron/packager": "^20.3.0",

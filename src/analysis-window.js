@@ -6,7 +6,7 @@
 
     async function boot() {
         const ui = window.BrainLumeAnalysisUi;
-        if (!ui) throw new Error('离线分析界面加载失败');
+        if (!ui) throw new Error('记录分析页面未能打开');
         ui.init();
         const sessions = await window.desktopAPI.listSessions();
         ui.setSessions(sessions);

@@ -35,9 +35,11 @@
                 for (const listener of this.listeners) listener(bytes);
             };
             this._onDisconnected = () => {
-                this.server = null;
-                this.writeCharacteristic = null;
-                this.notifyCharacteristic = null;
+                // A characteristic can be reused after reconnecting. Remove
+                // this listener before losing its reference, or old clients
+                // can keep delivering each EEG sample a second time.
+                this._clearGattState(false);
+                this.device?.removeEventListener('gattserverdisconnected', this._onDisconnected);
                 for (const listener of this.disconnectListeners) listener();
             };
         }

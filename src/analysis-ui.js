@@ -22,11 +22,11 @@
     }
 
     function duration(value) {
-        const seconds = Math.max(0, Number(value) || 0);
-        const hours = Math.floor(seconds / 3600);
-        const minutes = Math.floor(seconds % 3600 / 60);
-        const rest = seconds % 60;
-        return hours ? `${hours}h ${minutes}m ${rest.toFixed(1)}s` : `${minutes}m ${rest.toFixed(1)}s`;
+        const tenths = Math.round(Math.max(0, Number(value) || 0) * 10);
+        const hours = Math.floor(tenths / 36000);
+        const minutes = Math.floor(tenths % 36000 / 600);
+        const seconds = tenths % 600 / 10;
+        return `${hours ? `${hours}时` : ''}${minutes ? `${minutes}分` : ''}${seconds || (!hours && !minutes) ? `${seconds}秒` : ''}`;
     }
 
     function formatDate(value) {
@@ -94,8 +94,12 @@
             safePercent,
             !waitingForResult,
         );
-        $('analysis-open-button').disabled = active;
-        $('analysis-yasa-button').disabled = active || !state.summary || state.yasaRunning;
+        $('analysis-open-button').disabled = active || !$('analysis-session-select').value;
+        $('analysis-session-select').disabled = active;
+        $('analysis-export-button').disabled = active || !state.summary;
+        const tooShort = state.summary && state.summary.durationSeconds < 30;
+        $('analysis-yasa-button').disabled = active || !state.summary || state.yasaRunning || Boolean(tooShort);
+        $('analysis-yasa-button').title = tooShort ? '记录不足 30 秒，暂不能分期' : '用 YASA 重新计算这条记录';
         $('analysis-online-staging-refresh').disabled = active || !state.summary;
     }
 
@@ -110,9 +114,10 @@
     function setSessions(sessions) {
         state.sessions = sessions || [];
         const selected = $('analysis-session-select').value;
-        $('analysis-session-select').innerHTML = '<option value="">请选择采集记录</option>' + state.sessions.map(session =>
+        $('analysis-session-select').innerHTML = '<option value="" disabled selected>请选择采集记录</option>' + state.sessions.map(session =>
             `<option value="${escapeHtml(session.id)}">${escapeHtml(formatDate(session.startedAt))} · CH${session.selectedChannel} · ${escapeHtml(session.planName || '手动采集')} · ${Number(session.rows || 0).toLocaleString()} 点</option>`).join('');
         if (state.sessions.some(session => session.id === selected)) $('analysis-session-select').value = selected;
+        $('analysis-open-button').disabled = !$('analysis-session-select').value;
     }
 
     function showAnalysisDialog() {
@@ -141,7 +146,7 @@
         if (analysisId) await window.desktopAPI.closeAnalysis(analysisId).catch(() => {});
         $('analysis-workspace').hidden = true;
         $('analysis-empty').hidden = false;
-        updateEmptyState('从已有采集记录中选择一个会话开始分析。', '选择记录后，这里会显示读取、滤波和质量分析进度。');
+        updateEmptyState('选择一条记录开始分析。', '分析保存的数据，不影响正在进行的采集。');
         $('analysis-export-button').disabled = true;
         $('analysis-yasa-button').disabled = true;
         setLoading(false);
@@ -153,6 +158,8 @@
     async function openSession(sessionId) {
         if (!sessionId) throw new Error('请先选择采集记录');
         const openingSerial = ++state.openingSerial;
+        state.opening = true;
+        setLoading(true, '正在读取记录…', 1);
         if (state.analysisId) await window.desktopAPI.closeAnalysis(state.analysisId).catch(() => {});
         state.analysisId = null;
         state.openingAnalysisId = null;
@@ -166,7 +173,7 @@
         state.onlineStagingSerial += 1;
         $('analysis-workspace').hidden = true;
         $('analysis-empty').hidden = false;
-        updateEmptyState('正在读取并分析记录…', '正在读取 EDF/CSV、滤波并计算质量指标。', 1);
+        updateEmptyState('正在分析记录…', '读取脑电，过滤干扰，检查信号。', 1);
         $('analysis-yasa-button').disabled = true;
         $('analysis-export-button').disabled = true;
         state.opening = true;
@@ -183,6 +190,8 @@
             state.opening = false;
             clearOpeningWatchdog();
             state.summary = result;
+            state.yasa = result.savedYasa || null;
+            state.yasaRestored = Boolean(result.savedYasa);
             state.source = 'filtered';
             state.startSample = 0;
             state.endSample = result.integrity.validSamples;
@@ -193,6 +202,7 @@
             $('analysis-workspace').hidden = false;
             $('analysis-export-button').disabled = false;
             setLoading(false);
+            $('analysis-open-button').textContent = '重新分析';
             // The summary is the first useful result. The two visualizations
             // are independent follow-up requests, so they should not block
             // the page from becoming usable one after another.
@@ -226,18 +236,18 @@
         $('analysis-kpis').innerHTML = [
             ['有效样本', Number(integrity.validSamples).toLocaleString(), `${number(integrity.effectiveSampleRateHz)} Hz`],
             ['记录时长', duration(summary.durationSeconds), `CH${summary.metadata.selectedChannel || 2}`],
-            ['可用 epoch', `${number(integrity.usableEpochPercent, 1)}%`, `${integrity.epochs - integrity.rejectedEpochs}/${integrity.epochs}`],
-            ['Seq 缺口', Number(integrity.seqGaps).toLocaleString(), `无效行 ${integrity.invalidRows}`],
+            ['可用片段', integrity.epochs ? `${number(integrity.usableEpochPercent, 1)}%` : '--', integrity.epochs ? `${integrity.epochs - integrity.rejectedEpochs}/${integrity.epochs} 段` : '记录不足 30 秒'],
+            ['数据断档', Number(integrity.seqGaps).toLocaleString(), `无效行 ${integrity.invalidRows}`],
             ['50Hz 干扰', `${number(metrics.interference50HzRmsUv)} µV`, '原始信号 RMS'],
         ].map(item => `<article class="analysis-metric"><span>${item[0]}</span><strong>${item[1]}</strong><small>${item[2]}</small></article>`).join('');
         $('analysis-quality-body').innerHTML = [
-            ['滤波 RMS', `${number(metrics.filteredRmsUv)} µV`],
-            ['滤波峰峰值', `${number(metrics.filteredPeakToPeakUv)} µV`],
-            ['1–99% 稳健幅度', `${number(metrics.robustRangeUv)} µV`],
-            ['原始绝对中位偏置', `${number(metrics.rawAbsoluteMedianUv)} µV`],
-            ['分钟基线变化范围', `${number(metrics.baselineRangeUv)} µV`],
-            ['ADC 削波样本', Number(integrity.clippingSamples).toLocaleString()],
-            ['严重伪迹 epoch', `${integrity.rejectedEpochs}/${integrity.epochs}`],
+            ['信号强度（RMS）', `${number(metrics.filteredRmsUv)} µV`],
+            ['最大波动范围', `${number(metrics.filteredPeakToPeakUv)} µV`],
+            ['常见波动范围（1–99%）', `${number(metrics.robustRangeUv)} µV`],
+            ['原始基线偏移', `${number(metrics.rawAbsoluteMedianUv)} µV`],
+            ['每每分钟基线变化范围', `${number(metrics.baselineRangeUv)} µV`],
+            ['达到量程边缘的采样点', Number(integrity.clippingSamples).toLocaleString()],
+            ['明显异常片段', `${integrity.rejectedEpochs}/${integrity.epochs}`],
         ].map(item => `<tr><th>${item[0]}</th><td>${item[1]}</td></tr>`).join('');
         $('analysis-band-body').innerHTML = Object.values(metrics.bandPowers).map(band =>
             `<tr><th>${escapeHtml(band.label)}</th><td>${number(band.absolute, 4)} µV²</td><td>${number(band.relativePercent, 2)}%</td></tr>`).join('');
@@ -249,17 +259,22 @@
         const warnings = summary.warnings || [];
         $('analysis-warnings').hidden = warnings.length === 0;
         $('analysis-warnings').textContent = warnings.join('\n');
-        $('analysis-wave-title').textContent = `CH${summary.metadata.selectedChannel || 2} · ${state.source === 'raw' ? '原始' : '滤波后'}波形`;
+        $('analysis-wave-title').textContent = `CH${summary.metadata.selectedChannel || 2} · ${state.source === 'raw' ? '原始' : '去干扰后'}波形`;
         document.querySelectorAll('#analysis-source-toggle button').forEach(button => button.classList.toggle('active', button.dataset.source === state.source));
     }
 
     function onlineStagingModeLabel(mode) {
-        return mode === 'causal' ? '当前因果候选' : mode === 'center' ? '中心回顾（仅复核）' : `未知（${mode || '--'}）`;
+        return mode === 'causal' ? '实时分期' : mode === 'center' ? '回看约 5 分钟前' : `未知（${mode || '--'}）`;
+    }
+
+    function signalReasonLabel(reason) {
+        return ({ raw_saturation: '信号超出范围', amplitude: '信号波动过大',
+            flatline: '信号几乎没有变化', sample_gap: '数据有断档' })[reason] || '信号异常';
     }
 
     function onlineStagingLightLabel(record) {
-        if (record.stimulusShadow) return '验证命中（未发光）';
-        if (record.inferenceMode === 'center') return '中心回顾，不触发';
+        if (record.stimulusShadow) return '试运行达标，未开灯';
+        if (record.inferenceMode === 'center') return '只供查看';
         return record.lightChannels?.length
             ? `${record.lightChannels.map(channel => `CH${channel}`).join('、')} 开启`
             : '关闭';
@@ -270,7 +285,7 @@
     }
 
     function stagingStageLabel(stage) {
-        return String(stage) === 'UNKNOWN' ? '不可评分' : String(stage || '--');
+        return String(stage) === 'UNKNOWN' ? '无法判断' : String(stage || '--');
     }
 
     function stagingCandidateStage(record) {
@@ -281,7 +296,7 @@
         const scoredStage = String(record?.stage || 'UNKNOWN');
         const candidateStage = stagingCandidateStage(record);
         if (scoredStage !== 'UNKNOWN') return stagingStageLabel(scoredStage);
-        if (candidateStage === 'N3') return 'N3 候选';
+        if (candidateStage === 'N3') return '可能是 N3';
         if (candidateStage !== 'UNKNOWN') return stagingStageLabel(candidateStage);
         return stagingStageLabel(scoredStage);
     }
@@ -290,19 +305,19 @@
         const scoredStage = String(record?.stage || 'UNKNOWN');
         const candidateStage = stagingCandidateStage(record);
         const status = record?.quality?.ok === false
-            ? '质量警告（未计入）' : stagingN3StatusLabel(record?.n3Status);
+            ? '信号异常，不计入' : stagingN3StatusLabel(record?.n3Status);
         if (scoredStage === 'UNKNOWN') {
             const candidate = candidateStage === 'UNKNOWN' ? '' : `模型 ${stagingStageLabel(candidateStage)}`;
-            return [status, candidate, '本 epoch 不计入有效分期'].filter(Boolean).join(' · ');
+            return [status, candidate, '本片段 不计入有效分期'].filter(Boolean).join(' · ');
         }
         return status || '已输出';
     }
 
     function stagingN3StatusLabel(status) {
         return ({
-            trusted: 'N3 已确认', pending: 'N3 待连续确认', pending_exit: 'N3 退出待确认',
-            suppressed: 'N3 未通过安全确认', quality_rejected: '质量警告（未计入）',
-            inactive: 'N3 未命中', unavailable: '后处理不可用',
+            trusted: 'N3 通过额外检查', pending: '等待更多 N3 片段', pending_exit: '正在确认 N3 是否结束',
+            suppressed: 'N3 未通过额外检查', quality_rejected: '信号异常，不计入',
+            inactive: 'N3 未命中', unavailable: '额外检查未能运行',
         })[String(status || '')] || '';
     }
 
@@ -311,14 +326,14 @@
         const summaryNode = $('analysis-sleep-structure-summary');
         const body = $('analysis-sleep-structure-body');
         if (!stateNode || !summaryNode || !body) return;
-        const stageLabels = { W: 'Wake（W）', N1: 'N1', N2: 'N2', N3: 'N3', REM: 'REM' };
+        const stageLabels = { W: '清醒（W）', N1: 'N1', N2: 'N2', N3: 'N3', REM: 'REM' };
         const stages = Object.keys(stageLabels);
         if (!metrics || !Number(metrics.recordCount)) {
-            stateNode.textContent = metrics ? '无在线记录' : '无法读取';
+            stateNode.textContent = metrics ? '没有分期记录' : '无法读取';
             summaryNode.textContent = metrics
-                ? '这条记录没有保存在线 EEG 分期事件；可能是旧版本记录或采集时未启用实时分期。'
-                : '当前分析结果未返回在线 EEG 睡眠结构；原始记录未被修改。';
-            body.innerHTML = '<tr><td colspan="5"><div class="empty-state">无可评分在线 EEG 分期</div></td></tr>';
+                ? '采集时未保存分期，可尝试“重新分期”。'
+                : '暂时无法统计睡眠时长。';
+            body.innerHTML = '<tr><td colspan="5"><div class="empty-state">暂无可统计的分期</div></td></tr>';
             return;
         }
         const counts = metrics.stageCounts || {};
@@ -327,16 +342,16 @@
         const longest = metrics.longestBouts || metrics.longestBoutSeconds || {};
         const cards = [
             ['总睡眠时长', duration(metrics.totalSleepSeconds), 'N1 + N2 + N3 + REM'],
-            ['睡眠效率', Number.isFinite(Number(metrics.sleepEfficiencyPercent)) ? `${number(metrics.sleepEfficiencyPercent, 1)}%` : '--', '可评分 epoch 内'],
+            ['睡眠效率', Number.isFinite(Number(metrics.sleepEfficiencyPercent)) ? `${number(metrics.sleepEfficiencyPercent, 1)}%` : '--', '可判断的片段'],
             ['睡眠起点', metrics.sleepOnsetSeconds == null ? '--' : duration(metrics.sleepOnsetSeconds), '相对记录开始'],
-            ['入睡后清醒 WASO', duration(metrics.wasoSeconds), `${Number(metrics.wasoEpochs || 0)} 个 epoch`],
-            ['阶段转换', Number(metrics.transitionCount || 0).toLocaleString(), '仅计连续 epoch'],
+            ['入睡后清醒', duration(metrics.wasoSeconds), `${Number(metrics.wasoEpochs || 0)} 段`],
+            ['分期变化', Number(metrics.transitionCount || 0).toLocaleString(), '仅计连续片段'],
             ['最长 N3', duration(longest.N3), '连续且质量通过'],
-            ['N3 候选 / 确认', `${Number(metrics.n3CandidateEpochs || 0)} / ${Number(metrics.n3ConfirmedEpochs || 0)}`, '候选不等于确认'],
-            ['N3 未通过确认', Number(metrics.n3SuppressedEpochs || 0).toLocaleString(), '质量通过但未确认'],
-            ['质量拒绝 / 未评分', `${Number(metrics.qualityRejectedEpochs || 0)} / ${Number(metrics.unknownEpochs || 0)}`, '未计入结构'],
+            ['N3 初步 / 通过检查', `${Number(metrics.n3CandidateEpochs || 0)} / ${Number(metrics.n3ConfirmedEpochs || 0)}`, '可能是，不代表已确认'],
+            ['N3 未通过额外检查', Number(metrics.n3SuppressedEpochs || 0).toLocaleString(), '未通过额外的 N3 检查'],
+            ['信号异常 / 无法判断', `${Number(metrics.qualityRejectedEpochs || 0)} / ${Number(metrics.unknownEpochs || 0)}`, '不计入统计'],
         ];
-        stateNode.textContent = `去重 ${Number(metrics.recordCount || 0).toLocaleString()} · 可评分 ${Number(metrics.scoredEpochs || 0).toLocaleString()} epoch`;
+        stateNode.textContent = `共 ${Number(metrics.recordCount || 0).toLocaleString()} 段 · 可判断 ${Number(metrics.scoredEpochs || 0).toLocaleString()} 段`;
         summaryNode.innerHTML = cards.map(item => `<article class="analysis-yasa-stat"><span>${item[0]}</span><strong>${item[1]}</strong><small>${item[2]}</small></article>`).join('');
         body.innerHTML = stages.map(stage => `<tr>
             <th>${stageLabels[stage]}</th>
@@ -354,28 +369,28 @@
         if (!stateLabel || !summaryNode || !body) return;
         if (state.onlineStagingLoading) {
             stateLabel.textContent = '读取中…';
-            summaryNode.textContent = '正在读取该采集记录的 events.jsonl；不会修改原始 EEG 数据，也不会触发光刺激。';
-            body.innerHTML = '<tr><td colspan="13"><div class="empty-state">正在读取在线分期记录…</div></td></tr>';
+            summaryNode.textContent = '正在读取采集时保存的分期…';
+            body.innerHTML = '<tr><td colspan="13"><div class="empty-state">正在读取采集时分期记录…</div></td></tr>';
             return;
         }
         if (state.onlineStagingError) {
             stateLabel.textContent = '读取失败';
             summaryNode.textContent = state.onlineStagingError;
-            body.innerHTML = '<tr><td colspan="13"><div class="empty-state">无法读取在线分期记录</div></td></tr>';
+            body.innerHTML = '<tr><td colspan="13"><div class="empty-state">无法读取采集时分期记录</div></td></tr>';
             return;
         }
         if (!state.onlineStaging) {
             stateLabel.textContent = '尚未读取';
-            summaryNode.textContent = '选择采集记录后，将读取该记录在采集期间保存的在线分期结果。';
-            body.innerHTML = '<tr><td colspan="13"><div class="empty-state">尚未读取在线分期记录</div></td></tr>';
+            summaryNode.textContent = '选择记录后显示当时保存的分期。';
+            body.innerHTML = '<tr><td colspan="13"><div class="empty-state">尚未读取采集时分期记录</div></td></tr>';
             return;
         }
         const records = state.onlineStaging.records || [];
         const summary = state.onlineStaging.summary || {};
         if (!records.length) {
-            stateLabel.textContent = '无在线记录';
-            summaryNode.textContent = '该采集记录没有保存 sleep_stage_inferred 事件，可能是旧版本记录或采集时未启用实时分期。';
-            body.innerHTML = '<tr><td colspan="13"><div class="empty-state">这条记录没有可展示的在线分期结果</div></td></tr>';
+            stateLabel.textContent = '没有分期记录';
+            summaryNode.textContent = '未保存分期，可能采集时没有开启实时分期。';
+            body.innerHTML = '<tr><td colspan="13"><div class="empty-state">这条记录没有可展示的采集时分期结果</div></td></tr>';
             return;
         }
         const centerCount = Number(summary.modeCounts?.center || 0);
@@ -389,21 +404,21 @@
             return seconds > 0 ? `延迟约 ${duration(seconds)}` : '延迟 0s';
         };
         const epochRange = Number.isInteger(summary.firstEpoch) && Number.isInteger(summary.lastEpoch)
-            ? `Epoch ${summary.firstEpoch + 1}–${summary.lastEpoch + 1}` : '--';
+            ? `第 ${summary.firstEpoch + 1}–${summary.lastEpoch + 1} 段` : '--';
         stateLabel.textContent = `${records.length.toLocaleString()} 条输出`;
         summaryNode.innerHTML = [
-            ['在线输出', records.length.toLocaleString(), 'events.jsonl 已保存'],
-            ['覆盖 epoch', Number(summary.epochCount || 0).toLocaleString(), epochRange],
-            ['当前因果', causalCount.toLocaleString(), `用于实时候选 · ${modeDelayLabel('causal')}`],
-            ['中心回顾', centerCount.toLocaleString(), `仅复核，不触发 · ${modeDelayLabel('center')}${otherCount ? ` · 其他模式 ${otherCount} 条` : ''}`],
+            ['采集时的判断', records.length.toLocaleString(), '当时已保存'],
+            ['覆盖片段', Number(summary.epochCount || 0).toLocaleString(), epochRange],
+            ['实时分期', causalCount.toLocaleString(), `用于实时估计 · ${modeDelayLabel('causal')}`],
+            ['回看 5 分钟前', centerCount.toLocaleString(), `仅复核，不触发 · ${modeDelayLabel('center')}${otherCount ? ` · 其他模式 ${otherCount} 条` : ''}`],
         ].map(item => `<article class="analysis-yasa-stat"><span>${item[0]}</span><strong>${item[1]}</strong><small>${item[2]}</small></article>`).join('');
         body.innerHTML = records.map(record => {
             const modeClass = record.inferenceMode === 'center' ? 'mode-center' : record.inferenceMode === 'causal' ? 'mode-causal' : '';
             const probabilities = Array.from({ length: 5 }, (_, index) => `<td>${percentage(record.probabilities?.[index])}</td>`).join('');
-            const quality = record.quality?.ok === true ? '通过' : escapeHtml(record.quality?.reason || '未通过');
+            const quality = record.quality?.ok === true ? '正常' : signalReasonLabel(record.quality?.reason);
             const delay = record.modelDelaySeconds > 0 ? `约 ${duration(record.modelDelaySeconds)}` : '0s';
             const stageDetail = [
-                record.inferenceMode === 'causal' ? '当前候选' : record.inferenceMode === 'center' ? '中心验证' : '未知模式',
+                record.inferenceMode === 'causal' ? '实时分期' : record.inferenceMode === 'center' ? '回看 5 分钟前' : '未知模式',
                 stagingStagePresentationDetail(record),
             ].filter(Boolean).join(' · ');
             return `<tr>
@@ -450,8 +465,8 @@
         if (!state.yasa) {
             stateLabel.textContent = state.yasaRunning ? '运行中…' : '尚未运行';
             summaryNode.textContent = state.yasaRunning
-                ? '正在调用 Python YASA；原始 EDF 保持不变，结果仅用于复核。'
-                : '选择采集记录后，点击右上角“YASA 离线复核”运行独立分期；YASA 不参与实时光刺激。';
+                ? '正在用 YASA 重新分期…'
+                : state.summary?.durationSeconds < 30 ? '记录不足 30 秒，暂不能分期。' : '点击“重新分期（YASA）”计算这条记录。';
             body.innerHTML = '<tr><td colspan="4"><div class="empty-state">尚未生成 YASA 结果</div></td></tr>';
             warningsNode.hidden = true;
             warningsNode.textContent = '';
@@ -462,16 +477,16 @@
         const overlap = result.overlapWithRealtime || {};
         const compared = Number(overlap.comparedEpochs || 0);
         const overlapText = compared
-            ? `${number(overlap.agreementPercent, 1)}%（${compared} 个重合 epoch）`
+            ? `${number(overlap.agreementPercent, 1)}%（${compared} 段可对照）`
             : '无实时结果可对照';
-        stateLabel.textContent = `已完成 · YASA ${escapeHtml(result.yasaVersion || '--')}`;
+        stateLabel.textContent = `${state.yasaRestored ? '已保存' : '已完成'} · YASA ${escapeHtml(result.yasaVersion || '--')}`;
         summaryNode.innerHTML = [
-            ['有效 epoch', Number(result.epochCount || 0).toLocaleString(), '每个 epoch 30 秒'],
+            ['可判断片段', (Number(result.epochCount || 0) - Number(result.stageCounts?.UNKNOWN || 0)).toLocaleString(), '已排除信号超出范围或没有变化的片段'],
             ['记录时长', duration(result.durationSeconds), `${number(result.sampleRateHz)} Hz`],
-            ['与实时结果一致率', overlapText, '仅作描述性对照'],
+            ['与实时结果一致率', overlapText, '一致不代表一定正确'],
             ['输出文件', '2 个', 'summary.json + epochs.csv · 仅复核'],
         ].map(item => `<article class="analysis-yasa-stat"><span>${item[0]}</span><strong>${item[1]}</strong><small>${item[2]}</small></article>`).join('');
-        const labels = { W: 'Wake', N1: 'N1', N2: 'N2', N3: 'N3', REM: 'REM' };
+        const labels = { W: '清醒', N1: 'N1', N2: 'N2', N3: 'N3', REM: 'REM', UNKNOWN: '无法判断' };
         body.innerHTML = Object.keys(labels).map(stage => `<tr>
             <th>${labels[stage]} <small>(${stage})</small></th>
             <td>${Number(result.stageCounts?.[stage] || 0).toLocaleString()}</td>
@@ -491,21 +506,22 @@
         if (!state.summary) throw new Error('请先打开一条采集记录');
         const sessionId = state.summary.metadata?.id || $('analysis-session-select').value;
         state.yasa = null;
+        state.yasaRestored = false;
         state.yasaRunning = true;
         renderYasa();
-        setLoading(true, '运行 Python YASA 离线分期…', 12);
+        setLoading(true, '运行 Python 重新分期（YASA）…', 12);
         try {
             const result = await window.desktopAPI.runYasaStaging(sessionId);
             if (!result?.ok) throw new Error(result?.error || 'YASA 未返回有效结果');
             state.yasa = result;
             renderYasa();
-            toast(`YASA 分期完成：${result.epochCount} 个 epoch`);
+            toast(`YASA 分期完成：${result.epochCount} 段`);
         } catch (error) {
             $('analysis-yasa-state').textContent = '运行失败';
             $('analysis-yasa-summary').textContent = error.message;
             $('analysis-yasa-warnings').hidden = false;
             $('analysis-yasa-warnings').textContent = error.message;
-            toast(`YASA 离线分期失败：${error.message}`, true);
+            toast(`重新分期（YASA）失败：${error.message}`, true);
         } finally {
             state.yasaRunning = false;
             setLoading(false);
@@ -519,11 +535,11 @@
             <span class="segment-source">${segment.source === 'event-log' ? '日志识别' : '手工'}</span>
             <label>光通道<select class="segment-channel"><option value="1" ${segment.channel===1?'selected':''}>CH1</option><option value="2" ${segment.channel===2?'selected':''}>CH2</option></select></label>
             <label>前段开始 s<input class="segment-pre" type="number" min="0" step="0.1" value="${number(segment.preStartSec,3)}"></label>
-            <label>刺激开始 s<input class="segment-start" type="number" min="0" step="0.1" value="${number(segment.startSec,3)}"></label>
-            <label>刺激结束 s<input class="segment-end" type="number" min="0" step="0.1" value="${number(segment.endSec,3)}"></label>
+            <label>开灯时间（秒）<input class="segment-start" type="number" min="0" step="0.1" value="${number(segment.startSec,3)}"></label>
+            <label>关灯时间（秒）<input class="segment-end" type="number" min="0" step="0.1" value="${number(segment.endSec,3)}"></label>
             <label>后段结束 s<input class="segment-post" type="number" min="0" step="0.1" value="${number(segment.postEndSec,3)}"></label>
             <button type="button" class="remove-segment" title="删除区间">×</button>
-        </div>`).join('') : '<div class="empty-state">未找到完整光刺激事件，可点击“添加区间”手工标注。</div>';
+        </div>`).join('') : '<div class="empty-state">未找到完整光照事件，可点击“添加区间”手工标注。</div>';
     }
 
     function renderPhaseMetrics() {
@@ -532,12 +548,12 @@
             const segment = state.summary.phaseMetrics[index];
             for (const phaseId of ['before', 'during', 'after']) {
                 const phase = segment.phases[phaseId];
-                const label = { before: '刺激前', during: '刺激中', after: '刺激后' }[phaseId];
+                const label = { before: '光照前', during: '光照中', after: '光照后' }[phaseId];
                 const bands = phase.bandPowers;
                 rows.push(`<tr><td>#${index+1} CH${segment.channel}</td><th>${label}</th><td>${number(phase.durationSeconds,1)}s</td><td>${number(phase.rmsUv)}µV</td><td>${number(phase.robustRangeUv)}µV</td><td>${number(bands.delta.relativePercent,1)}%</td><td>${number(bands.theta.relativePercent,1)}%</td><td>${number(bands.alpha.relativePercent,1)}%</td><td>${number(bands.beta.relativePercent,1)}%</td><td>${number(bands.gamma.relativePercent,1)}%</td><td>${number(bands.stimulus40.relativePercent,2)}%</td></tr>`);
             }
         }
-        $('analysis-phase-body').innerHTML = rows.join('') || '<tr><td colspan="11"><div class="empty-state">暂无刺激阶段统计</div></td></tr>';
+        $('analysis-phase-body').innerHTML = rows.join('') || '<tr><td colspan="11"><div class="empty-state">暂无光照区间统计</div></td></tr>';
     }
 
     function readSegments() {
@@ -554,13 +570,13 @@
 
     async function applySegments() {
         if (!state.analysisId) return;
-        setLoading(true, '重新计算刺激阶段…', 80);
+        setLoading(true, '重新计算光照区间…', 80);
         try {
             const updated = await window.desktopAPI.updateAnalysisSegments(state.analysisId, readSegments());
             state.summary = { analysisId: state.analysisId, ...updated };
             renderSummary();
             await requestViewport();
-            toast('刺激阶段指标已重新计算');
+            toast('光照区间指标已重新计算');
         } finally { setLoading(false); }
     }
 
@@ -761,6 +777,10 @@
     }
 
     function setupEvents() {
+        $('analysis-session-select').addEventListener('change', () => {
+            const sessionId = $('analysis-session-select').value;
+            if (sessionId) void openSession(sessionId).catch(error => toast(error.message, true));
+        });
         $('analysis-open-button').addEventListener('click',()=>openSession($('analysis-session-select').value).catch(()=>{}));
         $('analysis-dialog-close').addEventListener('click',()=>closeAnalysisDialog().catch(error=>toast(error.message,true)));
         const dialog = $('analysis-dialog');

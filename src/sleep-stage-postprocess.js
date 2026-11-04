@@ -304,7 +304,7 @@
                 this.n3Active = false;
                 this.n3Run = 0;
                 this.exitRun = 0;
-                return this.resultFor(result, rawStage, rawProbabilities, normalizedProbabilities, 0, {
+                return this.resultFor(result, rawStage, rawProbabilities, normalizedProbabilities, isRawN3 ? 0 : modelConfidence, {
                     stage: isRawN3 ? UNKNOWN_STAGE : rawStage,
                     n3Status: isRawN3 ? 'suppressed' : 'inactive',
                     reason: isRawN3 ? 'n3_exit_hysteresis' : 'stage_not_n3',

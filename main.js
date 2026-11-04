@@ -10,8 +10,10 @@ const { spawn } = require('node:child_process');
 const { Worker } = require('node:worker_threads');
 const Core = require('./src/core');
 const AnalysisReport = require('./src/analysis-report');
+const { readSavedYasaResult } = require('./src/saved-yasa');
 const { parseSessionStagingHistory } = require('./src/session-history');
 const { EdfWriter } = require('./src/edf');
+const { encodeRawRecords } = require('./src/raw-recording');
 const GithubSync = require('./src/github-sync');
 const BLE_DEVICE_NAME = 'BrainLume2.0C';
 const APP_ICON_PATH = path.join(__dirname, 'assets', 'cao-cao-icon-original.png');
@@ -31,6 +33,69 @@ let githubSyncState = null;
 let githubSyncStatePromise = null;
 let githubUploadProcessPromise = null;
 let sleepWorkerEntry = null;
+let historyReplay = { running: false };
+let historyReplayWorker = null;
+
+function sendHistoryReplayStatus() {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('history-replay:progress', historyReplay);
+}
+
+async function historyReplayStatus() {
+    if (!historyReplay.output) {
+        const paths = await ensureDataDirectories();
+        const latest = await readJson(path.join(paths.root, 'analysis/history-replay/latest.json'), null).catch(() => null);
+        if (latest) historyReplay.output = latest.output;
+    }
+    return historyReplay;
+}
+
+async function startHistoryReplay(protocol) {
+    if (historyReplay.running) return historyReplay;
+    if (activeRecordings.size) throw new Error('请先停止采集，再回放历史数据');
+    const Sleep = require('./src/realtime-sleep');
+    protocol = Sleep.normalizeStimulusProtocol({ ...protocol, enabled: true, shadowMode: true });
+    const errors = Sleep.validateStimulusProtocol(protocol);
+    if (errors.length) throw new Error(errors.join('；'));
+    historyReplay = { running: true, phase: 'read', index: 0, output: historyReplay.output };
+    try {
+    const paths = await ensureDataDirectories();
+    const root = path.join(paths.root, 'analysis/history-replay');
+    const output = path.join(root, new Date().toISOString().replace(/[:.]/g, '-'));
+    const watchComparison = await readJson(path.join(root, 'watch-comparison.json'), null).catch(() => null);
+    const worker = new Worker(path.join(__dirname, 'history-replay-worker.js'), { workerData: {
+        rootDir: __dirname, sessionsRoot: paths.sessions, output, protocol, watchComparison,
+    } });
+    historyReplayWorker = worker;
+    historyReplay = { running: true, phase: 'read', index: 0, output: historyReplay.output };
+    sendHistoryReplayStatus();
+    worker.on('message', message => {
+        if (message.type === 'progress') historyReplay = { ...historyReplay, epochs: message.progress.phase === 'read' ? undefined : historyReplay.epochs, ...message.progress };
+        else if (message.type === 'done') historyReplay = { ...message, running: false, phase: message.cancelled ? 'cancelled' : 'done' };
+        else if (message.type === 'error') historyReplay = { ...historyReplay, running: false, phase: 'error', error: message.error };
+        sendHistoryReplayStatus();
+    });
+    worker.on('error', error => { historyReplay = { ...historyReplay, running: false, phase: 'error', error: error.message }; sendHistoryReplayStatus(); });
+    worker.on('exit', () => {
+        if (historyReplayWorker !== worker) return;
+        historyReplayWorker = null;
+        if (historyReplay.running) { historyReplay = { ...historyReplay, running: false, phase: 'error', error: '回放意外结束，请重试' }; sendHistoryReplayStatus(); }
+    });
+    return historyReplay;
+    } catch (error) {
+        historyReplay = { ...historyReplay, running: false, phase: 'error', error: error.message };
+        sendHistoryReplayStatus(); throw error;
+    }
+}
+
+async function openHistoryReplayReport() {
+    const status = await historyReplayStatus(), paths = await ensureDataDirectories();
+    if (!status.output) throw new Error('请先完成一次回放');
+    const root = path.resolve(paths.root, 'analysis/history-replay');
+    const file = path.resolve(status.output, 'report.html');
+    if (!file.startsWith(root + path.sep) || !fs.existsSync(file)) throw new Error('回放报告不存在，请重新回放');
+    const error = await shell.openPath(file); if (error) throw new Error(error);
+    return true;
+}
 const deviceDiagnosticMode = process.argv.includes('--device-diagnostic');
 const debugCliMode = process.argv.includes('--debug-cli');
 const debugCommandArg = process.argv.find(value => value.startsWith('--debug-command='));
@@ -143,12 +208,14 @@ function githubSyncStatePath() {
     return path.join(app.getPath('userData'), 'github-sync-state.json');
 }
 
+let githubEncryptionStatus = null;
 function githubEncryptionAvailable() {
     try {
-        return Boolean(safeStorage && safeStorage.isEncryptionAvailable());
+        githubEncryptionStatus = Boolean(safeStorage && safeStorage.isEncryptionAvailable());
     } catch {
-        return false;
+        githubEncryptionStatus = false;
     }
+    return githubEncryptionStatus;
 }
 
 function encryptGithubToken(token) {
@@ -294,7 +361,7 @@ function publicGithubSyncState(state) {
     return {
         config: GithubSync.redactGithubConfig(state.config),
         tokenStored: Boolean(state.tokenCiphertext),
-        encryptionAvailable: githubEncryptionAvailable(),
+        encryptionAvailable: githubEncryptionStatus,
         queue: state.queue.map(item => ({
             sessionId: item.sessionId,
             repository: item.config.repository,
@@ -346,7 +413,7 @@ function githubApiRequest(pathname, { method = 'GET', token = '', body = null } 
             callback(value);
         };
         request.setHeader('Accept', 'application/vnd.github+json');
-        request.setHeader('User-Agent', 'CaoCao-EEG-Desktop/0.5.1');
+        request.setHeader('User-Agent', 'CaoCao-EEG-Desktop/0.6.0');
         request.setHeader('X-GitHub-Api-Version', '2022-11-28');
         if (token) request.setHeader('Authorization', `Bearer ${token}`);
         if (body !== null) request.setHeader('Content-Type', 'application/json');
@@ -829,7 +896,7 @@ async function openAnalysisWindow(sessionId) {
         minWidth: 960,
         minHeight: 680,
         backgroundColor: '#edf2f6',
-        title: '曹操 · EEG 分析',
+        title: '曹操 · 记录分析',
         icon: APP_ICON_PATH,
         webPreferences: {
             preload: path.join(__dirname, 'analysis-preload.js'),
@@ -896,6 +963,11 @@ async function startRecording(metadata) {
         directory,
         storageFormat: 'EDF',
         dataFile: 'eeg_raw.edf',
+        ...(metadata.rawStorageVersion === 1 ? {
+            rawDataFile: 'raw_adc.bin', rawRecordBytes: 16,
+            rawEncoding: 'int32le-code,uint16le-seq,uint16-reserved,float64le-elapsed-ms',
+            adcScale: { vrefVolts: 4.5, gain: 24 },
+        } : {}),
     };
     await writeJsonAtomic(path.join(directory, 'session.json'), session);
     const edfPartial = path.join(directory, 'eeg_raw.edf.partial');
@@ -917,6 +989,10 @@ async function startRecording(metadata) {
         hadStimulation: false,
         stimulationCount: 0,
     };
+    if (session.rawDataFile) {
+        recording.rawPartial = path.join(directory, 'raw_adc.bin.partial');
+        await fsp.writeFile(recording.rawPartial, Buffer.alloc(0), { flag: 'wx' });
+    }
     activeRecordings.set(id, recording);
     await fsp.appendFile(recording.eventsPath, `${JSON.stringify({ ts: nowIso(), level: 'info', action: 'session_started', sessionId: id })}\n`, 'utf8');
     return { ...session, edfPath: edfPartial };
@@ -926,7 +1002,13 @@ async function appendRecordingSamples(id, samples) {
     const recording = activeRecordings.get(id);
     if (!recording) throw new Error(`Recording ${id} is not active`);
     if (!Array.isArray(samples) || samples.length === 0) return { rows: recording.rows };
-    recording.appendPromise = recording.appendPromise.then(() => recording.edfWriter.appendSamples(samples));
+    recording.appendPromise = recording.appendPromise.then(async () => {
+        if (!recording.rawPartial) return recording.edfWriter.appendSamples(samples);
+        const raw = encodeRawRecords(samples);
+        const values = samples.map(s => s.rawCode * 4.5e6 / (24 * 8388608));
+        await fsp.appendFile(recording.rawPartial, raw);
+        return recording.edfWriter.appendSamples(values);
+    });
     const result = await recording.appendPromise;
     recording.rows = result.rows;
     return { rows: recording.rows, records: result.records };
@@ -947,30 +1029,48 @@ async function appendRecordingEvent(id, event) {
 async function stopRecording(id, status = 'completed', reason = null) {
     const recording = activeRecordings.get(id);
     if (!recording) return null;
-    activeRecordings.delete(id);
-    await recording.appendPromise;
-    const edf = await recording.edfWriter.finalize();
-    const endedAt = nowIso();
-    const finalSession = {
-        ...recording.session,
-        status,
-        reason,
-        endedAt,
-        rows: edf.receivedSamples,
-        edfRecords: edf.records,
-        edfPaddedSamples: edf.paddedSamples,
-        hasStimulation: recording.hadStimulation,
-        stimulationCount: recording.stimulationCount,
-    };
-    await fsp.appendFile(recording.eventsPath, `${JSON.stringify({ ts: endedAt, level: 'info', action: 'session_stopped', status, reason, rows: edf.receivedSamples })}\n`, 'utf8');
-    await fsp.rename(recording.edfPartial, recording.edfFinal);
-    const sessionJsonPath = path.join(recording.session.directory, 'session.json');
-    finalSession.githubUpload = await prepareAutomaticGithubUpload(
-        finalSession, recording.edfFinal, sessionJsonPath, recording.hadStimulation, recording.eventsPath,
-    );
-    await writeJsonAtomic(sessionJsonPath, finalSession);
-    if (finalSession.githubUpload.status === 'queued') void processGithubUploadQueue();
-    return { ...finalSession, edfPath: recording.edfFinal };
+    if (recording.stopPromise) return recording.stopPromise;
+    recording.stopPromise = (async () => {
+        // An append failure must not prevent closing the writer and preserving
+        // whatever was saved. Keep the entry available if finalization itself
+        // fails, so a retry can complete after disk space is restored.
+        try { await recording.appendPromise; }
+        catch (error) { recording.writeError = error.message; }
+        const edf = recording.finalizedEdf || await recording.edfWriter.finalize();
+        recording.finalizedEdf = edf;
+        if (recording.writeError) { status = 'failed'; reason = 'recording_write_failed'; }
+        const endedAt = nowIso();
+        const finalSession = {
+            ...recording.session,
+            status,
+            reason,
+            endedAt,
+            rows: edf.receivedSamples,
+            edfRecords: edf.records,
+            edfPaddedSamples: edf.paddedSamples,
+            hasStimulation: recording.hadStimulation,
+            stimulationCount: recording.stimulationCount,
+            ...(recording.writeError ? { writeError: recording.writeError } : {}),
+        };
+        await fsp.appendFile(recording.eventsPath, `${JSON.stringify({ ts: endedAt, level: 'info', action: 'session_stopped', status, reason, rows: edf.receivedSamples })}\n`, 'utf8');
+        if (!recording.edfRenamed) {
+            await fsp.rename(recording.edfPartial, recording.edfFinal);
+            recording.edfRenamed = true;
+        }
+        if (recording.rawPartial && !recording.rawRenamed) {
+            await fsp.rename(recording.rawPartial, path.join(recording.session.directory, 'raw_adc.bin'));
+            recording.rawRenamed = true;
+        }
+        const sessionJsonPath = path.join(recording.session.directory, 'session.json');
+        finalSession.githubUpload = await prepareAutomaticGithubUpload(
+            finalSession, recording.edfFinal, sessionJsonPath, recording.hadStimulation, recording.eventsPath,
+        );
+        await writeJsonAtomic(sessionJsonPath, finalSession);
+        activeRecordings.delete(id);
+        if (finalSession.githubUpload.status === 'queued') void processGithubUploadQueue();
+        return { ...finalSession, edfPath: recording.edfFinal };
+    })().finally(() => { recording.stopPromise = null; });
+    return recording.stopPromise;
 }
 
 async function listSessions() {
@@ -1160,6 +1260,10 @@ async function runYasaStaging(sessionId) {
     }
 
     const scriptPath = path.join(__dirname, 'python', 'yasa_offline_staging.py');
+    if (selected.status !== 'recording' && Number.isFinite(Number(selected.rows))
+        && Number(selected.rows) < Number(selected.sampleRateHz || 250) * 30) {
+        throw new Error('记录不足 30 秒，无法重新分期。');
+    }
     const outputDir = path.join(directory, 'analysis', 'yasa');
     await fsp.mkdir(outputDir, { recursive: true });
     const scriptArgs = ['--session-dir', directory, '--output-dir', outputDir];
@@ -1188,6 +1292,9 @@ async function runYasaStaging(sessionId) {
         const payload = parseLastJsonLine(result.stdout);
         if (result.code === 0 && payload?.ok) {
             return { ...payload, pythonCommand: command, outputDir };
+        }
+        if (payload?.errorType && !['ModuleNotFoundError', 'ImportError'].includes(payload.errorType)) {
+            throw new Error(`YASA 分期失败：${payload.error}`);
         }
         const message = payload?.error || result.stderr.trim() || `Python 进程退出码 ${result.code}`;
         failures.push(`${command}：${message}`);
@@ -1310,7 +1417,8 @@ async function openAnalysis(sessionId, ownerWebContentsId = null) {
         const summary = await analysisRequest(entry, 'open', {
             directory, sessionId, includeEpochs: false, includeSpectra: false,
         });
-        return { analysisId, ...summary };
+        const savedYasa = await readSavedYasaResult(directory, selected);
+        return { analysisId, ...summary, savedYasa };
     } catch (error) {
         await closeAnalysis(analysisId);
         throw error;
@@ -1349,10 +1457,11 @@ async function saveScreenshotForWindow(window, pageTitle = '当前页面') {
 async function exportAnalysisReport(analysisId) {
     const entry = requireAnalysis(analysisId);
     const data = await analysisRequest(entry, 'report');
+    data.savedYasa = await readSavedYasaResult(entry.directory, data.metadata);
     data.generatedAt = nowIso();
     const ownerWindow = BrowserWindow.getAllWindows().find(window => window.webContents.id === entry.webContentsId) || mainWindow;
     const result = await dialog.showSaveDialog(ownerWindow, {
-        title: '导出 EEG 分析报告',
+        title: '导出记录分析报告',
         defaultPath: `曹操_EEG_Report_${localFileStamp()}.pdf`,
         filters: [{ name: 'PDF 报告', extensions: ['pdf'] }],
     });
@@ -1405,6 +1514,10 @@ function registerIpc() {
     ipcMain.handle('session:event', (_event, id, record) => appendRecordingEvent(id, record));
     ipcMain.handle('session:stop', (_event, id, status, reason) => stopRecording(id, status, reason));
     ipcMain.handle('sessions:list', () => listSessions());
+    ipcMain.handle('history-replay:status', historyReplayStatus);
+    ipcMain.handle('history-replay:start', (_event, protocol) => startHistoryReplay(protocol));
+    ipcMain.handle('history-replay:cancel', () => { historyReplayWorker?.postMessage('cancel'); return true; });
+    ipcMain.handle('history-replay:open', openHistoryReplayReport);
     ipcMain.handle('session:staging-history', (_event, sessionId) => readSessionStagingHistory(sessionId));
     ipcMain.handle('analysis-window:open', (_event, sessionId) => openAnalysisWindow(sessionId));
     ipcMain.handle('analysis-window:close', event => {
@@ -1463,11 +1576,12 @@ app.whenReady().then(async () => {
     session.defaultSession.setDevicePermissionHandler(details => details.deviceType === 'bluetooth');
     configureApplicationMenu();
     registerIpc();
-    void getGithubSyncState().then(async () => {
-        const adopted = await adoptGithubCliToken();
-        if (adopted) await emitGithubSyncStatus();
-        return processGithubUploadQueue();
-    }).catch(error => {
+    // Do not decrypt the GitHub token during normal startup. On macOS,
+    // safeStorage.decryptString opens the login keychain and can show an
+    // authorization prompt for a locally/ad-hoc signed packaged app.
+    // Token access remains lazy: explicit GitHub test/upload/retry actions
+    // decrypt it only when the user actually requests synchronization.
+    void getGithubSyncState().catch(error => {
         console.error(`GitHub EDF 同步队列初始化失败：${error.message}`);
     });
     if (debugCliMode) createDebugWindow(); else createWindow();
@@ -1483,6 +1597,14 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', async event => {
+    if (historyReplayWorker) {
+        event.preventDefault();
+        const worker = historyReplayWorker;
+        worker.postMessage('cancel');
+        await Promise.race([new Promise(resolve => worker.once('exit', resolve)), new Promise(resolve => setTimeout(resolve, 5000))]);
+        if (historyReplayWorker === worker) { historyReplayWorker = null; await worker.terminate(); }
+        app.quit(); return;
+    }
     if (activeRecordings.size === 0 && activeAnalyses.size === 0) return;
     event.preventDefault();
     for (const id of Array.from(activeRecordings.keys())) {

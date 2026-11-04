@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { packager } = require('@electron/packager');
+const { bundlePython } = require('./package-python');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const PACKAGE = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, 'package.json'), 'utf8'));
@@ -36,7 +37,9 @@ function shouldIgnore(targetPlatform, relativePath) {
     const isAbsolute = /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\');
     const relative = isAbsolute ? path.relative(PROJECT_ROOT, value) : value.replace(/^[/\\]+/, '');
     const normalized = `/${relative.replaceAll('\\', '/')}`;
-    if (/^\/(artifacts|Data|dist|test|iOS)(\/|$)/i.test(normalized)) return true;
+    if (/^\/(artifacts|Data|dist|release|test|iOS|android|analysis|\.git|\.github|\.venv-yasa)(\/|$)/i.test(normalized)) return true;
+    if (/(^|\/)(__pycache__|\.DS_Store)(\/|$)|\.pyc$/i.test(normalized)) return true;
+    if (/^\/scripts\/(analyze-recorded-night|compare-watch-night)\.py$/i.test(normalized)) return true;
     if (/^\/node_modules\.backup[^/]*(\/|$)/i.test(normalized)) return true;
     if (targetPlatform === 'win32' && /\/node_modules\/onnxruntime-node\/bin\/napi-v6\/(darwin|linux)(\/|$)/i.test(normalized)) return true;
     if (targetPlatform === 'darwin' && /\/node_modules\/onnxruntime-node\/bin\/napi-v6\/(linux|win32)(\/|$)/i.test(normalized)) return true;
@@ -58,6 +61,10 @@ async function main() {
         asar: false,
         appBundleId: platform === 'darwin' ? 'com.caocao.eeg' : undefined,
         icon,
+        ...(platform === 'darwin' ? { extendInfo: {
+            NSBluetoothAlwaysUsageDescription: '连接 BrainLume 脑电设备，接收脑电数据并控制光照。',
+            NSBluetoothPeripheralUsageDescription: '连接 BrainLume 脑电设备，接收脑电数据并控制光照。',
+        } } : {}),
         ignore: filePath => shouldIgnore(platform, filePath),
         ...(process.env.BRAINLUME_ELECTRON_ZIP_DIR
             ? { electronZipDir: path.resolve(process.env.BRAINLUME_ELECTRON_ZIP_DIR) }
@@ -83,6 +90,8 @@ async function main() {
     if (platform === 'win32') executablePath = path.join(appPath, `${PACKAGE.productName}.exe`);
     else executablePath = appPath;
     if (!fs.existsSync(executablePath)) throw new Error(`未找到目标启动文件：${executablePath}`);
+    const bundledPython = platform === 'darwin'
+        ? await bundlePython(PROJECT_ROOT, path.join(appPath, 'Contents/Resources/app')) : null;
 
     const manifest = {
         productName: PACKAGE.productName,
@@ -94,6 +103,8 @@ async function main() {
         executablePath,
         asar: false,
         nativeRuntime: 'onnxruntime-node filtered for target platform',
+        bundledPython,
+        sourceCommit: (() => { try { return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim(); } catch { return null; } })(),
         builtAt: new Date().toISOString(),
     };
     // macOS code signing seals the bundle's Contents directory and rejects

@@ -7,6 +7,7 @@ const readline = require('node:readline');
 const { parentPort } = require('node:worker_threads');
 const Analysis = require('./src/analysis-core');
 const { readEdf } = require('./src/edf');
+const { decodeRawRecords } = require('./src/raw-recording');
 const { computeOnlineSleepMetrics } = require('./src/session-history');
 
 let recording = null;
@@ -75,6 +76,15 @@ function eventSequenceGapCount(events) {
 }
 
 async function loadEdf(directory, metadata, events) {
+    if (metadata.rawDataFile === 'raw_adc.bin') {
+        const finalRaw = path.join(directory, 'raw_adc.bin');
+        const file = fs.existsSync(finalRaw) ? finalRaw : `${finalRaw}.partial`;
+        const data = decodeRawRecords(await fsp.readFile(file), metadata.adcScale);
+        return { values: data.values, invalidRows: 0, seqGaps: eventSequenceGapCount(events),
+            clippingSamples: data.rawCodes.reduce((sum, c) => sum + Number(Math.abs(c) >= 0.99 * 8388607), 0),
+            firstElapsedUs: data.elapsedMs[0] * 1000, lastElapsedUs: data.elapsedMs[data.elapsedMs.length - 1] * 1000,
+            edfPath: file };
+    }
     const finalPath = path.join(directory, 'eeg_raw.edf');
     const partialPath = path.join(directory, 'eeg_raw.edf.partial');
     const edfPath = fs.existsSync(finalPath) ? finalPath : partialPath;
@@ -191,7 +201,7 @@ async function openRecording(payload) {
     const events = await readEvents(payload.directory);
     const edfFinalPath = path.join(payload.directory, 'eeg_raw.edf');
     const edfPartialPath = path.join(payload.directory, 'eeg_raw.edf.partial');
-    const source = fs.existsSync(edfFinalPath) || fs.existsSync(edfPartialPath)
+    const source = metadata.rawDataFile === 'raw_adc.bin' || fs.existsSync(edfFinalPath) || fs.existsSync(edfPartialPath)
         ? await loadEdf(payload.directory, metadata, events)
         : await loadCsv(payload.directory, Number(metadata.rows || 0));
     const sampleRateHz = Number(metadata.sampleRateHz || 250);

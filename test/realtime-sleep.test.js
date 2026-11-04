@@ -82,12 +82,12 @@ test('spectral features expose a bounded delta-power ratio for the live quality 
 
 test('light stimulus presentation distinguishes protocol intent from verified hardware state', () => {
     assert.deepEqual(Sleep.lightStimulusPresentation({ connected: false }), {
-        tone: 'unknown', label: '未连接', detail: '无法确认设备光刺激状态',
+        tone: 'unknown', label: '未连接', detail: '无法确认设备是否开灯',
     });
     assert.deepEqual(Sleep.lightStimulusPresentation({
         connected: true, pending: { operation: 'start', channel: 2 },
     }), {
-        tone: 'pending', label: '正在开启 CH2', detail: '等待设备状态回读确认',
+        tone: 'pending', label: '正在开启 CH2', detail: '等待设备确认',
     });
     assert.deepEqual(Sleep.lightStimulusPresentation({ connected: true, verified: false }), {
         tone: 'unknown', label: '状态未知', detail: '等待设备状态查询',
@@ -95,12 +95,12 @@ test('light stimulus presentation distinguishes protocol intent from verified ha
     assert.deepEqual(Sleep.lightStimulusPresentation({
         connected: true, verified: true, runningChannels: [2], checkedAt: '23:49:23',
     }), {
-        tone: 'active', label: 'CH2 刺激中', detail: '设备回读确认 · 23:49:23',
+        tone: 'active', label: 'CH2 光照中', detail: '设备已确认 · 23:49:23',
     });
     assert.deepEqual(Sleep.lightStimulusPresentation({
         connected: true, verified: true, runningChannels: [], checkedAt: '23:50:00',
     }), {
-        tone: 'off', label: '已关闭', detail: '设备回读确认 · 23:50:00',
+        tone: 'off', label: '已关闭', detail: '设备已确认 · 23:50:00',
     });
 });
 
@@ -160,15 +160,15 @@ test('sleep-stage stimulus protocol validates safety limits', () => {
         minN3Probability: 1.1,
         minConfidence: 1.1,
         consecutiveEpochs: 0,
-        lightChannel: 3,
+        lightChannel: 4,
         frequencyHz: 0,
         powerPercent: 101,
         durationSeconds: 0,
         cooldownMinutes: 0,
     }), [
         'N3 候选概率阈值必须为 50%~100%',
-        '连续命中次数必须为 1~10',
-        '光刺激通道必须为 1 或 2',
+        '连续命中次数必须为 1~15',
+        '光刺激通道必须为 1、2 或全部通道',
         '光刺激频率必须为 1~100Hz',
         '光刺激功率必须为 0~100%',
         '刺激时长必须为 1~3600 秒',
@@ -309,7 +309,7 @@ test('sleep-stage stimulus protocol normalizes defaults and rejects invalid upda
         minN3Confidence: 0.8,
         minConfidence: 0.8,
         consecutiveEpochs: 2,
-        lightChannel: 1,
+        lightChannel: 3,
         frequencyHz: 10,
         powerPercent: 5,
         durationSeconds: 10,

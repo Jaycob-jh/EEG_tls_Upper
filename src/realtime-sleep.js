@@ -35,7 +35,7 @@
         // This threshold is only for the optional non-N3 experimental targets.
         minConfidence: 0.8,
         consecutiveEpochs: 2,
-        lightChannel: 1,
+        lightChannel: 3,
         frequencyHz: 10,
         powerPercent: 5,
         durationSeconds: 10,
@@ -88,8 +88,9 @@
             && !(protocol.minConfidence >= 0.5 && protocol.minConfidence <= 1)) {
             errors.push('其他分期置信度必须为 50%~100%');
         }
-        if (!integerInRange(protocol.consecutiveEpochs, 1, 10)) errors.push('连续命中次数必须为 1~10');
-        if (![1, 2].includes(protocol.lightChannel)) errors.push('光刺激通道必须为 1 或 2');
+        if (!integerInRange(protocol.consecutiveEpochs, 1, 15)) errors.push('连续命中次数必须为 1~15');
+        // 3 is an application-level selection for CH1 + CH2, never a wire channel.
+        if (![1, 2, 3].includes(protocol.lightChannel)) errors.push('光刺激通道必须为 1、2 或全部通道');
         if (!integerInRange(protocol.frequencyHz, 1, 100)) errors.push('光刺激频率必须为 1~100Hz');
         if (!integerInRange(protocol.powerPercent, 0, 100)) errors.push('光刺激功率必须为 0~100%');
         if (!integerInRange(protocol.durationSeconds, 1, 3600)) errors.push('刺激时长必须为 1~3600 秒');
@@ -147,14 +148,14 @@
     function lightStimulusPresentation(value = {}) {
         const state = value && typeof value === 'object' ? value : {};
         if (!state.connected) {
-            return { tone: 'unknown', label: '未连接', detail: '无法确认设备光刺激状态' };
+            return { tone: 'unknown', label: '未连接', detail: '无法确认设备是否开灯' };
         }
         if (state.pending) {
             const operation = state.pending.operation === 'start' ? '开启' : '关闭';
             return {
                 tone: 'pending',
                 label: `正在${operation} CH${Number(state.pending.channel)}`,
-                detail: '等待设备状态回读确认',
+                detail: '等待设备确认',
             };
         }
         if (!state.verified) {
@@ -163,9 +164,9 @@
         const channels = Array.from(state.runningChannels || [], Number)
             .filter(channel => channel === 1 || channel === 2)
             .sort();
-        const confirmation = `设备回读确认${state.checkedAt ? ` · ${state.checkedAt}` : ''}`;
+        const confirmation = `设备已确认${state.checkedAt ? ` · ${state.checkedAt}` : ''}`;
         if (channels.length) {
-            return { tone: 'active', label: `CH${channels.join('、CH')} 刺激中`, detail: confirmation };
+            return { tone: 'active', label: `CH${channels.join('、CH')} 光照中`, detail: confirmation };
         }
         return { tone: 'off', label: '已关闭', detail: confirmation };
     }
@@ -203,6 +204,9 @@
             if (Number.isFinite(epochIndex) && this.lastEpochIndex != null && epochIndex <= this.lastEpochIndex) {
                 return { triggered: false, reason: 'duplicate_epoch' };
             }
+            if (Number.isFinite(epochIndex) && this.lastEpochIndex != null && epochIndex !== this.lastEpochIndex + 1) {
+                this.reject('nonconsecutive_epoch');
+            }
             if (Number.isFinite(epochIndex)) this.lastEpochIndex = epochIndex;
             if (!this.protocol.enabled) return this.reject('disabled');
             if (nowMs < this.activeUntil) return this.reject('stimulus_active', false);
@@ -218,7 +222,9 @@
             const stage = useN3Probability ? 'N3' : String(result.stage || '');
             if (!this.protocol.targetStages.includes(stage)) return this.reject('stage_not_selected');
             const confidence = useN3Probability
-                ? Number(result.candidateConfidence ?? result.confidence)
+                ? (Number.isFinite(result.probabilities?.[3]) ? Number(result.probabilities[3])
+                    : candidateStage === 'N3' ? Number(result.candidateConfidence ?? result.confidence)
+                        : Number(result.confidence))
                 : Number(result.confidence);
             const threshold = useN3Probability
                 ? this.protocol.minN3Probability
@@ -484,6 +490,8 @@
 
         reset() {
             this.current = [];
+            this.currentGaps = [];
+            this.currentSaturated = [];
             this.currentGapSamples = 0;
             this.epochs = [];
             this.qualities = [];
@@ -499,13 +507,20 @@
             if (gapSamples) {
                 const fillValue = this.current.length ? this.current[this.current.length - 1] : Number(sample);
                 for (let index = 0; index < gapSamples; index++) this.current.push(fillValue);
+                for (let index = 0; index < gapSamples; index++) {
+                    this.currentGaps.push(1);
+                    this.currentSaturated.push(0);
+                }
                 this.currentGapSamples += gapSamples;
             }
             this.current.push(Number(sample));
+            this.currentGaps.push(0);
+            this.currentSaturated.push(Number.isFinite(options.rawCode) && Math.abs(options.rawCode) >= 0.99 * 8388607 ? 1 : 0);
             if (this.current.length < this.inputEpochLength) return null;
             const rawEpoch = this.current.splice(0, this.inputEpochLength);
-            const epochGapSamples = this.currentGapSamples;
-            this.currentGapSamples = 0;
+            const epochGapSamples = this.currentGaps.splice(0, this.inputEpochLength).reduce((sum, value) => sum + value, 0);
+            const saturatedSamples = this.currentSaturated.splice(0, this.inputEpochLength).reduce((sum, value) => sum + value, 0);
+            this.currentGapSamples -= epochGapSamples;
             const warmupSamples = this.qualityWarmupRemainingSamples;
             this.qualityWarmupRemainingSamples = 0;
             const quality = qualityMetrics(rawEpoch, {
@@ -519,6 +534,11 @@
                 quality.ok = false;
                 quality.reason = 'sample_gap';
                 quality.gapSamples = epochGapSamples;
+            }
+            quality.rawSaturatedSamples = saturatedSamples;
+            if (saturatedSamples) {
+                quality.ok = false;
+                quality.reason = 'raw_saturation';
             }
             const modelEpoch = resampleForRate(rawEpoch, this.inputRateHz, this.modelRateHz, this.modelEpochLength);
             for (let index = 0; index < modelEpoch.length; index++) {

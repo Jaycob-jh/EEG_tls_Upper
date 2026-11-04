@@ -14,6 +14,15 @@ contextBridge.exposeInMainWorld('desktopAPI', {
     appendSessionEvent: (id, record) => ipcRenderer.invoke('session:event', id, record),
     stopSession: (id, status, reason) => ipcRenderer.invoke('session:stop', id, status, reason),
     listSessions: () => ipcRenderer.invoke('sessions:list'),
+    getHistoryReplayStatus: () => ipcRenderer.invoke('history-replay:status'),
+    startHistoryReplay: protocol => ipcRenderer.invoke('history-replay:start', protocol),
+    cancelHistoryReplay: () => ipcRenderer.invoke('history-replay:cancel'),
+    openHistoryReplayReport: () => ipcRenderer.invoke('history-replay:open'),
+    onHistoryReplayProgress: callback => {
+        const listener = (_event, status) => callback(status);
+        ipcRenderer.on('history-replay:progress', listener);
+        return () => ipcRenderer.removeListener('history-replay:progress', listener);
+    },
     loadSessionStagingHistory: sessionId => ipcRenderer.invoke('session:staging-history', sessionId),
     openAnalysisWindow: sessionId => ipcRenderer.invoke('analysis-window:open', sessionId),
     closeAnalysisWindow: () => ipcRenderer.invoke('analysis-window:close'),

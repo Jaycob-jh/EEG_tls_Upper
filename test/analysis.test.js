@@ -158,8 +158,8 @@ test('report output contains charts, disclaimer and reproducible CSV attachments
         phaseMetrics: [{ channel: 2, source: 'manual', startSec: 0, endSec: 1, phases: { before: phase, during: phase, after: phase } }],
         charts: { overview: { samples: [0,1] }, comparison: { startSec: 0, raw: { samples: [0,1] }, filtered: { samples: [0,1] } } } };
     const html = Report.buildReportHtml(data);
-    assert.match(html, /不构成医疗诊断/);
-    assert.match(html, /在线 EEG 睡眠结构/);
+    assert.match(html, /不能用于诊断/);
+    assert.match(html, /采集时睡眠统计/);
     assert.match(html, /data-chart="overview"/);
     assert.match(Report.epochsCsv(data.epochs), /robust_range_uv/);
     assert.match(Report.phaseMetricsCsv(data.phaseMetrics), /stimulus40_pct/);

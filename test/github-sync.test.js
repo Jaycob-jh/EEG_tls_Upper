@@ -57,7 +57,7 @@ test('records UI and IPC expose history upload without broadening the upload sco
     const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
     const preload = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8');
     assert.match(html, /id="github-history-button"[^>]*>同步前几天数据/);
-    assert.match(html, /events\.jsonl/);
+    assert.match(html, /备份脑电文件（EDF）和操作日志/);
     assert.match(app, /getGithubHistoryCandidates/);
     assert.match(app, /uploadGithubHistory/);
     assert.match(main, /github-sync:history-candidates/);
