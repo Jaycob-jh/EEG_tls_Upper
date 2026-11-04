@@ -240,6 +240,8 @@ async function feedEpoch(page, mode = 'normal') {
             await analysis.evaluate(`document.querySelector('#analysis-yasa-button').click()`);
             await until(analysis, `/已完成|运行失败/.test(document.querySelector('#analysis-yasa-state').textContent)`, 60000);
             assert.match(await analysis.evaluate(`document.querySelector('#analysis-yasa-state').textContent`), /已完成/);
+            const savedYasa = JSON.parse(fs.readFileSync(path.join(sessions[0].directory, 'analysis/yasa/yasa_summary.json'), 'utf8'));
+            assert.equal(savedYasa.epochCount, Math.floor(sessions[0].rows / sessions[0].sampleRateHz / 30));
             await analysis.evaluate(`document.querySelector('#analysis-export-button').click()`);
             for (let i=0;i<100&&!fs.existsSync(path.join(output,'report.pdf'));i++) await wait(100);
             assert.ok(fs.statSync(path.join(output, 'report.pdf')).size > 1000);

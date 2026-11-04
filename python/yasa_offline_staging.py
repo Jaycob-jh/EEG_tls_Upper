@@ -196,6 +196,15 @@ def run() -> int:
         # legacy CSV sessions create a channel named "EEG". Use the actual
         # channel name so both storage formats reach the same YASA pipeline.
         eeg_name = raw.ch_names[0]
+        # Resampling can round a nearly complete final epoch up (e.g. 29.996s
+        # at 250 Hz becomes 30s at 100 Hz). Only feed fully acquired epochs;
+        # keep signal_uv unchanged for the saved recording-duration evidence.
+        epoch_samples = round(sample_rate_hz * 30)
+        complete_samples = len(signal_uv) // epoch_samples * epoch_samples
+        if complete_samples < epoch_samples:
+            raise ValueError('实际采集数据不足 30 秒')
+        if complete_samples < raw.n_times:
+            raw.crop(tmax=(complete_samples - 1) / sample_rate_hz)
         staging = yasa.SleepStaging(raw, eeg_name=eeg_name, metadata=yasa_metadata or None)
         prediction = staging.predict()
         predicted_labels = getattr(prediction, "hypno", prediction)
@@ -224,7 +233,7 @@ def run() -> int:
             "error": f"YASA 离线分期失败（记录 {duration / 60:.1f} 分钟）：{exc}",
         }, 3)
 
-    epoch_count = min(len(labels), int(probability_values.shape[0]))
+    epoch_count = min(len(labels), int(probability_values.shape[0]), complete_samples // epoch_samples)
     labels = labels[:epoch_count]
     probability_values = probability_values[:epoch_count]
     if epoch_count == 0:
