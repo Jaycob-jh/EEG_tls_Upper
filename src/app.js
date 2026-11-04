@@ -43,6 +43,11 @@
         eegRunning: false,
         deviceEegRunning: false,
         eegStopError: null,
+        eegStopPromise: null,
+        statusQueryPromise: null,
+        lastDeviceStatus: null,
+        lastDeviceStatusTime: null,
+        statusDeferredNoticeShown: false,
         indicatorRunning: false,
         indicatorPending: false,
         lightRunning: { 1: false, 2: false },
@@ -264,6 +269,7 @@
         const status = window.CaoCaoLiveStatus.project({
             connected: state.connected, connecting: state.connecting, eegRunning: state.eegRunning,
             eegStopError: state.eegStopError, recordingWriteError: state.recordingWriteError,
+            eegStopping: Boolean(state.eegStopPromise),
             modelReady: state.sleepModelReady && !state.liveModelError, lastSampleAt: state.lastEegReceivedAt,
             startedAt: state.liveStartedAt || Date.now(), quality: state.liveQuality, prediction: state.livePrediction,
             protocol: state.sleepStimulusProtocol, matchedCount: gate?.matchedCount,
@@ -296,7 +302,7 @@
         const armed = p.enabled && modelStimulusSourceAvailable();
         const targets = p.targetStages.join(' / ') || '未选择目标';
         $('simple-device-status').textContent = state.connected ? '已连接' : (state.connecting ? '连接中…' : '未连接');
-        $('simple-eeg-status').textContent = state.eegStopError ? '停止未确认' : state.recordingWriteError ? '保存失败' : state.eegRunning ? '正在采集' : '未开始';
+        $('simple-eeg-status').textContent = state.eegStopPromise ? '正在停止…' : state.eegStopError ? '停止未确认' : state.recordingWriteError ? '保存失败' : state.eegRunning ? '正在采集' : '未开始';
         $('simple-n3-status').textContent = !armed ? '未开启' : p.shadowMode ? '试运行 · 不发光' : state.sleepStimulusActiveChannel ? '正在光照' : `已开启 · 等待 ${targets}`;
         const lightDuration = p.durationSeconds < 60 ? `${p.durationSeconds} 秒`
             : `${Math.floor(p.durationSeconds / 60)} 分${p.durationSeconds % 60 ? ` ${p.durationSeconds % 60} 秒` : '钟'}`;
@@ -305,7 +311,7 @@
         const button = $('simple-n3-toggle');
         button.textContent = armed ? '关闭自动光照' : '开启自动光照';
         button.className = `button ${armed ? 'danger' : 'primary'}`;
-        button.disabled = !armed && (!state.connected || !state.eegRunning || !state.sleepModelReady || Boolean(state.manualLightChannel));
+        button.disabled = !armed && (!state.connected || !state.eegRunning || !state.sleepModelReady || Boolean(state.manualLightChannel) || Boolean(state.eegStopPromise) || Boolean(state.eegStopError));
         $('simple-session-hint').textContent = !state.connected ? '先点击第 1 步「连接设备」。'
             : !state.eegRunning ? '设备已连接，点击第 2 步「开始采集」。'
             : !armed ? '正在采集并保存。需要自动光照时，再开启第 3 步。'
@@ -593,8 +599,10 @@
         $('metric-channel').textContent = `CH${state.selectedChannel}`;
         $('metric-eeg').textContent = state.eegRunning ? '采集中' : '已停止';
         $('metric-eeg').style.color = state.eegRunning ? 'var(--green)' : '';
-        $('eeg-toggle-button').textContent = state.eegStopError ? '重试停止' : state.recordingWriteError && state.activeSession ? '重试保存' : state.eegRunning ? '停止采集' : '开始采集';
-        $('eeg-toggle-button').disabled = !state.connected;
+        $('eeg-toggle-button').textContent = state.eegStopPromise ? '正在停止，请稍候…' : state.eegStopError ? '重试停止' : state.recordingWriteError && state.activeSession ? '重试保存' : state.eegRunning || state.impedanceMode ? '停止采集' : '开始采集';
+        $('eeg-toggle-button').disabled = !state.connected || Boolean(state.eegStopPromise) || (state.impedanceBusy && !state.impedanceMode);
+        $('status-button').disabled = !state.connected || Boolean(state.statusQueryPromise) || Boolean(state.eegStopPromise);
+        $('impedance-button').disabled = !state.connected || state.eegRunning || state.impedanceMode || state.impedanceBusy || Boolean(state.eegStopPromise) || Boolean(state.eegStopError);
         $('eeg-toggle-button').className = `button ${state.eegRunning ? 'danger' : 'success'}`;
         $('channel-select').value = String(state.selectedChannel);
         $('debug-channel').value = String(state.selectedChannel);
@@ -1357,6 +1365,8 @@
             state.processor = processor;
             state.sleepModelFilter = sleepModelFilter;
             state.client = client;
+            state.lastDeviceStatus = null;
+            state.lastDeviceStatusTime = null;
             state.connected = true;
             state.connecting = false;
             state.indicatorRunning = false;
@@ -1372,7 +1382,7 @@
             addActivity(`已连接 ${transport.name}`);
             await audit('ble_connected', { deviceName: transport.name, deviceId: transport.id });
             try {
-                state.deviceInfo = await client.discover();
+                state.deviceInfo = await client.discover({ timeoutMs: 10000 });
                 const version = state.deviceInfo.protocolVersion;
                 const capabilityLabel = state.deviceInfo.compatibilityMode
                     ? '兼容模式'
@@ -1385,7 +1395,7 @@
                     addActivity(`能力发现完成：${state.deviceInfo.actionCount} Actions`);
                 }
             } catch (error) {
-                toast(`BLE 已连接，但能力发现失败：${error.message}`, 'error');
+                toast('蓝牙已连接，但设备信息还未读到。请先查询设备状态，暂不重复连接。', 'info');
                 logProtocol('ERR', `发现失败：${error.message}`, 'error');
             }
             await queryStatus().catch(() => {});
@@ -1471,8 +1481,27 @@
     }
 
     async function queryStatus() {
-        const status = await requireClient().getStatus();
+        // Live testing shows status queries time out during EEG on this firmware.
+        // Avoid repeated queries and do not label cached battery values fresh.
+        if (state.eegRunning || state.impedanceMode || state.eegStopPromise) {
+            const cached = state.lastDeviceStatus;
+            $('metric-battery').textContent = cached ? `${cached.batteryLevel}%` : '--%';
+            $('metric-battery-update').textContent = cached
+                ? `上次读取 ${state.lastDeviceStatusTime} · 停止采集后刷新` : '采集中，停止后读取电量';
+            if (!state.statusDeferredNoticeShown) {
+                state.statusDeferredNoticeShown = true;
+                toast('采集中使用最近一次电量，停止后刷新。');
+            }
+            return { ...cached, cached: true };
+        }
+        if (state.statusQueryPromise) return state.statusQueryPromise;
+        const request = (async () => {
+        const status = await requireClient().getStatus({ timeoutMs: 10000 });
+        state.lastDeviceStatus = status;
+        state.lastDeviceStatusTime = formatTime();
+        state.statusDeferredNoticeShown = false;
         state.deviceEegRunning = Boolean(status.eegRunning);
+        if (!state.deviceEegRunning && !state.eegRunning && !state.activeSession) state.eegStopError = null;
         // A device may still be streaming after reconnecting. Do not claim
         // that these samples are being saved without an application session.
         if (!state.impedanceMode && !state.activeSession) state.eegRunning = false;
@@ -1492,6 +1521,17 @@
         addActivity(`状态：电量 ${status.batteryLevel}% · EEG ${status.eegRunning ? '运行' : '停止'}`);
         await audit('status_received', status);
         return status;
+        })();
+        state.statusQueryPromise = request;
+        updateEegUi();
+        try { return await request; }
+        catch (error) {
+            if (error.name === 'TimeoutError') {
+                logProtocol('ERR', error.message, 'error');
+                throw new Error('设备状态回复较慢，暂时未更新电量。请稍后重试。');
+            }
+            throw error;
+        } finally { if (state.statusQueryPromise === request) state.statusQueryPromise = null; updateEegUi(); }
     }
 
     async function toggleIndicator() {
@@ -1565,6 +1605,7 @@
 
     async function startEeg(options = {}) {
         if (state.eegRunning) return;
+        if (state.impedanceBusy) throw new Error('电极检测正在结束，请稍候再开始采集');
         if (state.deviceEegRunning) await stopEegOnDevice();
         const channel = options.channel || state.selectedChannel;
         await applyChannel(channel, false);
@@ -1576,6 +1617,7 @@
             state.eegStopError = null;
             state.liveStartedAt = Date.now();
             state.lastEegReceivedAt = null;
+            state.statusDeferredNoticeShown = false;
             state.impedanceMode = false;
             updateEegUi();
             renderNextAction();
@@ -1588,13 +1630,28 @@
     }
 
     async function stopEegOnDevice() {
+        if (state.eegStopPromise) return state.eegStopPromise;
+        const task = confirmEegStopped();
+        state.eegStopPromise = task;
+        updateEegUi();
+        try { return await task; }
+        finally { if (state.eegStopPromise === task) state.eegStopPromise = null; updateEegUi(); }
+    }
+
+    async function confirmEegStopped() {
         const client = requireClient();
         let commandError = null;
-        try { await client.stopEeg(); } catch (error) { commandError = error; }
+        // Streaming firmware can deliver replies behind buffered EEG packets.
+        // One bounded transaction is preferable to queuing repeated stop clicks.
+        try { await client.stopEeg({ timeoutMs: 15000 }); } catch (error) { commandError = error; }
         try {
-            const status = await client.getStatus();
+            const status = await client.getStatus({ timeoutMs: 10000 });
             state.deviceEegRunning = Boolean(status.eegRunning);
             if (state.deviceEegRunning) throw commandError || new Error('设备仍在采集');
+            state.lastDeviceStatus = status;
+            state.lastDeviceStatusTime = formatTime();
+            $('metric-battery').textContent = `${status.batteryLevel}%`;
+            $('metric-battery-update').textContent = `更新 ${state.lastDeviceStatusTime} · 已停止采集`;
             state.eegStopError = null;
         } catch (error) {
             state.eegStopError = error.message;
@@ -1605,6 +1662,7 @@
 
     async function stopEeg(reason = 'manual') {
         if (!state.eegRunning && !state.impedanceMode && !state.activeSession) return;
+        state.cancelImpedanceWaiter?.();
         try { await disableSleepStimulus('EEG 已停止'); }
         catch (error) {
             logProtocol('ERR', `解除分期刺激协议：${error.message}`, 'error');
@@ -1622,7 +1680,9 @@
 
     async function measureImpedance(channel = state.selectedChannel) {
         if (state.eegRunning) throw new Error('阻抗检测前必须停止普通 EEG');
+        if (state.impedanceBusy) throw new Error('电极检测正在进行，请稍候');
         const client = requireClient();
+        state.impedanceBusy = true;
         state.impedanceMode = true;
         renderNextAction();
         $('impedance-button').disabled = true;
@@ -1646,12 +1706,20 @@
             const value = await new Promise((resolve, reject) => {
                 const timer = setTimeout(() => {
                     state.impedanceWaiter = null;
+                    state.cancelImpedanceWaiter = null;
                     reject(new Error('阻抗窗口采集超时'));
                 }, 8000);
+                state.cancelImpedanceWaiter = () => {
+                    clearTimeout(timer);state.impedanceWaiter=null;state.cancelImpedanceWaiter=null;
+                    reject(new Error('电极检测已取消'));
+                };
                 state.impedanceWaiter = impedanceValues => {
+                    const kohm = impedanceValues[channel - 1];
+                    if (!Number.isFinite(kohm) || kohm <= 0) return;
                     clearTimeout(timer);
                     state.impedanceWaiter = null;
-                    resolve(impedanceValues[channel - 1]);
+                    state.cancelImpedanceWaiter = null;
+                    resolve(kohm);
                 };
             });
             $('metric-impedance').textContent = `${value.toFixed(2)} kΩ`;
@@ -1660,15 +1728,18 @@
             await audit('impedance_measured', { channel, kohm: value });
             return value;
         } finally {
-            try { await stopEegOnDevice(); }
-            catch (error) { logProtocol('ERR', error.message, 'error'); }
-            state.eegRunning = false;
-            state.impedanceMode = false;
-            if (state.processor) { state.processor.impedance = null; state.processor.reset(); }
-            await applyChannel(channel, false).catch(() => {});
-            $('impedance-button').disabled = false;
-            updateEegUi();
-            renderNextAction();
+            try {
+                await stopEegOnDevice();
+                state.eegRunning = false;
+                state.impedanceMode = false;
+                if (state.processor) { state.processor.impedance = null; state.processor.reset(); }
+                await new Promise(resolve => setTimeout(resolve, 150));
+                await applyChannel(channel, false);
+            } catch (error) {
+                $('metric-impedance-state').textContent = '检测结束未完成，请先重试停止';
+                logProtocol('ERR', error.message, 'error');
+                throw error;
+            } finally { state.impedanceBusy = false; state.cancelImpedanceWaiter = null; updateEegUi(); renderNextAction(); }
         }
     }
 
@@ -1821,6 +1892,7 @@
     }
 
     async function performSafeStop(reason = 'manual') {
+        state.cancelImpedanceWaiter?.();
         clearManualLightTracking();
         planEngine.stopRelative(reason);
         await disableSleepStimulus(reason, false);
@@ -1927,7 +1999,7 @@
             state.sampleIndex++;
             if (state.edfQueue.length >= 512) flushEdfQueue();
         }
-        if (result.impedanceKohm && state.impedanceWaiter) state.impedanceWaiter(result.impedanceKohm);
+        if (result.impedanceKohm && state.impedanceWaiter && Math.abs(rawCode) < 0.99 * 8388607) state.impedanceWaiter(result.impedanceKohm);
         const now = performance.now();
         if (now - state.lastUiUpdate > 150) {
             state.lastUiUpdate = now;
@@ -2489,7 +2561,7 @@
                 throw error;
             }
         }));
-        $('eeg-toggle-button').addEventListener('click', () => runUiTask(() => state.eegRunning || state.activeSession ? stopEeg('manual') : startEeg()));
+        $('eeg-toggle-button').addEventListener('click', () => runUiTask(() => state.eegRunning || state.activeSession || state.impedanceMode || state.eegStopError ? stopEeg('manual') : startEeg()));
         $('impedance-button').addEventListener('click', () => runUiTask(() => measureImpedance()));
         $('status-button').addEventListener('click', () => runUiTask(queryStatus));
         $('safe-stop-button').addEventListener('click', () => runUiTask(() => safeStop('manual')));

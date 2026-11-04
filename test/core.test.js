@@ -29,6 +29,14 @@ test('CH2 normal and impedance ADS1299 images match the device specification', (
     assert.equal(impedance[0x0D - 1], 0x00);
 });
 
+test('ADS1299 readback ignores read-only BIAS_STAT but still rejects writable configuration differences', () => {
+    const config=BrainLume.ads1299.createRecommendedConfig({impedance:false,channels:[2]});
+    const readback=Uint8Array.from([0x1e,...config]);readback[3]|=1;
+    assert.deepEqual(BrainLume.ads1299.compareAdsConfig(config,readback),[]);
+    readback[3]^=4;
+    assert.equal(BrainLume.ads1299.compareAdsConfig(config,readback)[0].address,3);
+});
+
 test('device operation presentation distinguishes live hardware state from the next plan action', () => {
     assert.deepEqual(Core.deviceOperationPresentation({
         connected: true, verified: true, channel: 2, impedanceMode: true,

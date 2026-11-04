@@ -562,7 +562,10 @@
         for (const address of ADS1299_CONFIG_REGISTERS) {
             const expectedValue = target[address - 1];
             const actualValue = values[address];
-            if (actualValue !== expectedValue) mismatches.push({ address, expected: expectedValue, actual: actualValue });
+            // CONFIG3 bit 0 is the read-only BIAS_STAT flag (TI SBAS499C,
+            // section 9.6.1.4). Its live value is not a failed configuration.
+            const mask = address === 0x03 ? 0xFE : 0xFF;
+            if ((actualValue & mask) !== (expectedValue & mask)) mismatches.push({ address, expected: expectedValue, actual: actualValue });
         }
         return mismatches;
     }
@@ -982,6 +985,9 @@
                     data: value.data.slice(), frame: bytes.slice(),
                 }, matcher: options.matcher || (frame => frame.addr === value.addr && frame.func === value.func) };
             });
+            // The GATT write itself can take longer than the response timeout.
+            // Keep that rejection handled while awaiting the transport write.
+            response.catch(() => {});
             // 写入失败时撤销等待状态，否则下一条命令会被残留 pending 干扰。
             try { await this.transport.write(bytes); } catch (error) { clearTimeout(this.pending?.timer); this.pending = null; throw error; }
             return response;
@@ -990,7 +996,7 @@
          * 执行完整能力发现：F0 查询基础信息和 Action 数量，FE 查询描述表版本并逐项枚举。
          * FE/00 是可选步骤，失败只触发 warning，仍会继续 FE/01 枚举。
          */
-        async discover() {
+        async discover(options = {}) {
             const warnings = [];
             const reportWarning = (queryName, error, data = null) => {
                 const warning = error instanceof Error ? error : new Error(String(error));
@@ -1008,7 +1014,7 @@
             const query = async (queryName, subcommand, maker, expectedLength, required = false) => {
                 let data = null;
                 try {
-                    const frame = await this.sendCommand(maker(this.address));
+                    const frame = await this.sendCommand(maker(this.address), options);
                     data = toBytes(frame.data);
                     if (expectedLength != null && data.length !== expectedLength) {
                         throw new ProtocolError(`${queryName} response requires ${expectedLength} bytes, got ${data.length}`);
@@ -1028,7 +1034,7 @@
             let schemaVersion = null;
             if (actionCountValue != null) {
                 try {
-                    const frame = await this.sendCommand(commands.actionSchema(this.address));
+                    const frame = await this.sendCommand(commands.actionSchema(this.address), options);
                     schemaVersion = frame.data[0] ?? null;
                 } catch (error) {
                     reportWarning('actionSchema', error);
@@ -1043,7 +1049,7 @@
             if (actionCount != null) {
                 for (let index = 0; index < actionCount; index++) {
                     try {
-                        actions.push(decodeActionDescription((await this.sendCommand(commands.actionDescription(this.address, index))).data));
+                        actions.push(decodeActionDescription((await this.sendCommand(commands.actionDescription(this.address, index), options)).data));
                     } catch (error) {
                         reportWarning(`actionDescription[${index}]`, error);
                         break;
@@ -1056,7 +1062,7 @@
                 capabilityWarnings: warnings,
             };
         }
-        async getStatus() { return decodeStatus((await this.sendCommand(commands.status(this.address))).data); }
+        async getStatus(options = {}) { return decodeStatus((await this.sendCommand(commands.status(this.address), options)).data); }
         startIndicator() { return this.sendCommand(commands.startIndicator(this.address)); }
         stopIndicator() { return this.sendCommand(commands.stopIndicator(this.address)); }
         setLightConfig(channel, options) { return this.sendCommand(commands.setLightConfig(this.address, channel, options)); }
@@ -1064,7 +1070,7 @@
         stopLight(channel) { return this.sendCommand(commands.stopLight(this.address, channel)); }
         configureEeg(registers) { return this.sendCommand(commands.configureEeg(this.address, registers)); }
         startEeg() { return this.sendCommand(commands.startEeg(this.address)); }
-        stopEeg() { return this.sendCommand(commands.stopEeg(this.address)); }
+        stopEeg(options = {}) { return this.sendCommand(commands.stopEeg(this.address), options); }
         async readAds1299Registers() { return decodeRegisters((await this.sendCommand(commands.readAds1299Registers(this.address))).data); }
     }
 

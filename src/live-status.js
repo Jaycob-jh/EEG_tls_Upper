@@ -32,7 +32,7 @@
             : prediction && prediction.stimulusControlEligible !== true && !s.lightRunning ? '等待连续、清晰的脑电数据'
             : `连续满足 ${s.matchedCount || 0} / ${p.consecutiveEpochs} · 等待 ${targets.join(' / ')}`;
         return { connection: s.connected ? '已连接' : s.connecting ? '连接中…' : '未连接',
-            acquisition: s.recordingWriteError ? '保存失败，请检查磁盘' : s.eegStopError ? '停止未确认，仍在保存' : s.eegRunning ? '正在采集并保存' : '未开始', signal, stage, light, automation,
+            acquisition: s.recordingWriteError ? '保存失败，请检查磁盘' : s.eegStopping ? '正在等待设备停止，仍在保存' : s.eegStopError ? '停止未确认，仍在保存' : s.eegRunning ? '正在采集并保存' : '未开始', signal, stage, light, automation,
             probability: validPrediction ? targets.map(target => `${targets.length > 1 ? `${target} ` : ''}${(Number(prediction.probabilities?.[stages.indexOf(target)] || 0) * 100).toFixed(1)}%`).join(' · ') : '--',
             probabilityLabel: targets.length === 1 ? `${targets[0]} 估计概率` : '目标分期概率',
             freshness: predictionAge == null || !s.eegRunning || !s.connected ? '分期约每 30 秒更新' : `分期更新于 ${predictionAge} 秒前`,

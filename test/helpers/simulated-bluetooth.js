@@ -59,7 +59,9 @@
             payload[0] = sim.seq >>> 8; payload[1] = sim.seq & 255;
             sim.seq = (sim.seq + 1) & 65535;
             const t = sim.samples / 250;
+            const impedanceMode = registers[4] === 0x05;
             const code = mode === 'saturated' ? 8388607 : mode === 'flat' ? 0
+                : impedanceMode ? Math.round(6000 * Math.sin(2 * Math.PI * 7.8125 * t))
                 : Math.round(1800 * Math.sin(2 * Math.PI * 1.2 * t) + 450 * Math.sin(2 * Math.PI * 10 * t));
             for (let ch = 0; ch < 8; ch++) {
                 const p = 5 + ch * 3; payload[p] = (code >>> 16) & 255; payload[p + 1] = (code >>> 8) & 255; payload[p + 2] = code & 255;

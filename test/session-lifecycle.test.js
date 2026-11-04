@@ -34,6 +34,46 @@ test('a rejected EEG stop must retain acquisition and its open recording for a r
     assert.equal(finished, 0);
 });
 
+test('repeated stop requests share one bounded device transaction and retain the record until confirmation', async () => {
+    let stopCalls=0,statusCalls=0,release;
+    const waiting=new Promise(resolve=>{release=resolve;});
+    const state={eegRunning:true,activeSession:{id:'night'}};
+    const context=vm.createContext({state,updateEegUi(){},formatTime:()=>'', $:()=>({}),requireClient:()=>({
+        stopEeg:async options=>{stopCalls++;assert.equal(options.timeoutMs,15000);await waiting;},
+        getStatus:async options=>{statusCalls++;assert.equal(options.timeoutMs,10000);return {eegRunning:false};},
+    })});
+    vm.runInContext(extract('    async function stopEegOnDevice(', '    async function stopEeg(reason'),context);
+    const first=context.stopEegOnDevice(),second=context.stopEegOnDevice();
+    assert.equal(stopCalls,1);assert.equal(state.activeSession.id,'night');assert.ok(state.eegStopPromise);
+    release();await Promise.all([first,second]);
+    assert.equal(statusCalls,1);assert.equal(state.deviceEegRunning,false);assert.equal(state.eegStopError,null);assert.equal(state.eegStopPromise,null);
+});
+
+test('failed impedance stop does not reconfigure a device that may still be sampling', async () => {
+    const state={eegRunning:false,processor:{reset(){},impedance:null},selectedChannel:2};const writes=[];
+    const client={readAds1299Registers:async()=>({values:[]}),startEeg:async()=>{throw Error('measurement failed');}};
+    const elements=new Map();const $=id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id);};
+    const context=vm.createContext({state,$,setTimeout,clearTimeout,requireClient:()=>client,
+        applyChannel:async(_channel,impedance)=>{writes.push(impedance);return [];},
+        SDK:{ads1299:{compareAdsConfig:()=>[]},impedance:{ImpedanceEstimator:class {}}},
+        stopEegOnDevice:async()=>{throw Error('stop not confirmed');},
+        audit:async()=>{},renderNextAction(){},logProtocol(){},updateEegUi(){},Core:{bytesToHex:()=>''},
+    });
+    vm.runInContext(extract('    async function measureImpedance(', '    const LIGHT_MAX_ATTEMPTS'),context);
+    await assert.rejects(context.measureImpedance(),/stop not confirmed/);
+    assert.deepEqual(writes,[true]);assert.equal(state.impedanceMode,true);
+});
+
+test('battery refresh during EEG uses an explicitly labelled previous reading and sends no device command', async () => {
+    let requests=0,notices=0;const elements=new Map();
+    const state={eegRunning:true,lastDeviceStatus:{batteryLevel:80},lastDeviceStatusTime:'12:00:00'};
+    const context=vm.createContext({state,$:id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id);},
+        toast:()=>{notices++;},requireClient:()=>({getStatus:async()=>{requests++;}})});
+    vm.runInContext(extract('    async function queryStatus(', '    async function toggleIndicator('),context);
+    assert.equal((await context.queryStatus()).cached,true);await context.queryStatus();
+    assert.equal(requests,0);assert.equal(notices,1);assert.match(elements.get('metric-battery-update').textContent,/上次读取.*停止采集后刷新/);
+});
+
 test('disk-write failure stops acquisition without awaiting its own pending flush', async () => {
     let stopped = false, stopCount = 0;
     const state = { activeSession: { id: 'night' }, edfQueue: [{ rawCode: 1, seq: 1, elapsedMs: 4 }],
