@@ -603,6 +603,8 @@
         $('eeg-toggle-button').disabled = !state.connected || Boolean(state.eegStopPromise) || (state.impedanceBusy && !state.impedanceMode);
         $('status-button').disabled = !state.connected || Boolean(state.statusQueryPromise) || Boolean(state.eegStopPromise);
         $('impedance-button').disabled = !state.connected || state.eegRunning || state.impedanceMode || state.impedanceBusy || Boolean(state.eegStopPromise) || Boolean(state.eegStopError);
+        if (state.eegRunning || state.impedanceMode) $('metric-battery-update').textContent = state.lastDeviceStatusTime
+            ? `上次读取 ${state.lastDeviceStatusTime} · 停止采集后刷新` : '采集中，停止后读取电量';
         $('eeg-toggle-button').className = `button ${state.eegRunning ? 'danger' : 'success'}`;
         $('channel-select').value = String(state.selectedChannel);
         $('debug-channel').value = String(state.selectedChannel);
