@@ -14,7 +14,7 @@ if (!executable) {
     assert.equal(process.platform, 'darwin', 'This workflow runner currently requires macOS');
     // Keep the app bundle path short for macOS helper-process launch paths.
     isolatedApp = path.join(fs.mkdtempSync('/tmp/caocao-workflow-app-'), 'Workflow.app');
-    const packaged = path.join(root, 'dist/曹操-darwin-arm64/曹操.app');
+    const packaged = process.env.CAOCAO_WORKFLOW_BUNDLE || path.join(root, 'dist/曹操-darwin-arm64/曹操.app');
     console.log('正在准备独立测试环境…');
     const copied = spawnSync('/bin/cp', ['-cR', packaged, isolatedApp], { encoding: 'utf8' });
     if (copied.status !== 0) throw Error(copied.stderr);
@@ -31,7 +31,9 @@ const port = Number(process.env.CAOCAO_WORKFLOW_PORT || 9339);
 const results = [], connections = [], exceptions = [];
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const child = spawn(executable, [`--remote-debugging-port=${port}`], {
-    env: { ...process.env, CAOCAO_WORKFLOW_DIR: output }, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env,
+        ...(isolatedApp && !process.env.CAOCAO_WORKFLOW_MAIN ? { CAOCAO_WORKFLOW_MAIN: path.join(isolatedApp, 'Contents/Resources/app/main.js') } : {}),
+        CAOCAO_WORKFLOW_DIR: output }, stdio: ['ignore', 'pipe', 'pipe'],
 });
 let logs = '';
 child.stdout.on('data', chunk => { logs += chunk; });
