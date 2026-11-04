@@ -1218,6 +1218,7 @@ function runChildProcess(command, args) {
         let settled = false;
         const child = spawn(command, args, {
             cwd: __dirname,
+            env: { ...process.env, NUMBA_CACHE_DIR: path.join(app.getPath('userData'), 'cache', 'numba') },
             windowsHide: true,
             stdio: ['ignore', 'pipe', 'pipe'],
         });
@@ -1283,7 +1284,7 @@ async function runYasaStaging(sessionId) {
             failures.push(`${command} 不存在`);
             continue;
         }
-        const result = await runChildProcess(command, [...prefix, scriptPath, ...scriptArgs]);
+        const result = await runChildProcess(command, [...prefix, '-B', scriptPath, ...scriptArgs]);
         if (result.error) {
             failures.push(`${command}：${result.error.message}`);
             if (explicitPython || result.error.code !== 'ENOENT') break;

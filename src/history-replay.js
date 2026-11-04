@@ -133,7 +133,7 @@ async function runYasa(record,output,rootDir,options={}){
     if(!(Number(record.metadata.rows)>=Number(record.metadata.sampleRateHz||250)*30))return {skipped:true,reason:'不足 30 秒'};
     const executable=process.env.BRAINLUME_PYTHON||path.join(rootDir,'.venv-yasa',process.platform==='win32'?'Scripts/python.exe':'bin/python');
     return new Promise(resolve=>{
-        const child=spawn(executable,[path.join(rootDir,'python/yasa_offline_staging.py'),'--session-dir',record.directory,'--output-dir',output],{stdio:['ignore','pipe','pipe']});let stdout='',stderr='';
+        const child=spawn(executable,['-B',path.join(rootDir,'python/yasa_offline_staging.py'),'--session-dir',record.directory,'--output-dir',output],{stdio:['ignore','pipe','pipe'],env:{...process.env,NUMBA_CACHE_DIR:path.join(path.dirname(output),'numba-cache')}});let stdout='',stderr='';
         options.children?.add(child);
         const timer=setTimeout(()=>child.kill('SIGTERM'),180000);
         child.stdout.on('data',b=>stdout+=b);child.stderr.on('data',b=>stderr+=b);

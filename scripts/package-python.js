@@ -8,7 +8,7 @@ const { execFileSync } = require('node:child_process');
 async function bundlePython(project, resources) {
     const source = path.join(project, '.venv-yasa/bin/python');
     try { await fs.access(source); } catch { return null; }
-    const info = JSON.parse(execFileSync(source, ['-I', '-c',
+    const info = JSON.parse(execFileSync(source, ['-I', '-B', '-c',
         'import sys,sysconfig,json;print(json.dumps(dict(base=sys.base_prefix,executable=sys.executable,stdlib=sysconfig.get_path("stdlib"),packages=sysconfig.get_path("purelib"),version=f"{sys.version_info.major}.{sys.version_info.minor}")))'], { encoding: 'utf8' }));
     const root = path.join(resources, '.venv-yasa');
     const filter = p => !p.split(path.sep).some(n => n === '__pycache__' || n === '.DS_Store') && !p.endsWith('.pyc');
@@ -30,7 +30,7 @@ async function bundlePython(project, resources) {
     await fs.copyFile(path.join(libs, 'libomp.dylib'), path.join(lightgbm, 'libomp.dylib'));
     execFileSync('install_name_tool', ['-add_rpath', '@loader_path', lightgbmLibrary]);
     execFileSync('codesign', ['--force', '--sign', '-', lightgbmLibrary]);
-    const check = JSON.parse(execFileSync(path.join(root, 'bin/python'), ['-I', '-c',
+    const check = JSON.parse(execFileSync(path.join(root, 'bin/python'), ['-I', '-B', '-c',
         'import sys,json,yasa,mne,numpy;print(json.dumps(dict(prefix=sys.prefix,base=sys.base_prefix,yasa=yasa.__version__,mne=mne.__version__,numpy=numpy.__version__)))'], { encoding: 'utf8', timeout: 90000 }));
     if (path.resolve(check.prefix) !== path.resolve(root) || path.resolve(check.base) !== path.resolve(root)) {
         throw new Error('Bundled Python still depends on the build machine prefix');

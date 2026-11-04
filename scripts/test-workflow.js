@@ -289,6 +289,10 @@ async function feedEpoch(page, mode = 'normal') {
             await until(page, `(async()=>(await window.desktopAPI.listSessions())[0].status==='completed')()`);
             assert.equal(await page.evaluate(`(async()=>(await window.desktopAPI.listSessions())[0].rows)()`), 1024);
         });
+        if (isolatedApp) await step('运行 YASA 后应用签名仍有效', async () => {
+            const verified = spawnSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', isolatedApp], { encoding: 'utf8' });
+            assert.equal(verified.status, 0, verified.stderr);
+        });
         await step('无未捕获的页面异常', async () => assert.deepEqual(exceptions, []));
     } catch (error) {
         console.error(error.stack);

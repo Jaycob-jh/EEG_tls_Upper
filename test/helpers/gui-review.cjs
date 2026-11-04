@@ -64,7 +64,7 @@ exports.run=async ({page,connect,until,step,screenshot,output,root})=>{
         assert.equal(await page.evaluate(`workflowDevice.commands.length`),0);
     });
     // Reuse only synthetic recordings made by the software workflow test.
-    const previous=JSON.parse(fs.readFileSync(path.join(root,'artifacts/workflow-check-20261104/results.json'),'utf8'));
+    const previous=JSON.parse(fs.readFileSync(process.env.CAOCAO_GUI_SEED_RESULTS || path.join(root,'artifacts/workflow-check-20261104/results.json'),'utf8'));
     const seed=previous.results.find(item=>item.detail?.directory)?.detail?.directory;
     if(seed&&fs.existsSync(seed)){
         const destination=path.join(output,'documents/BrainLume Desktop/sessions/gui-synthetic-record');
