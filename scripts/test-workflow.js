@@ -177,11 +177,12 @@ async function feedEpoch(page, mode = 'normal') {
             assert.equal(await page.evaluate(`JSON.parse(localStorage.getItem('sleepStimulusProtocol')).enabled`), false);
             await until(page, `workflowDevice.light[2] === false`);
             await page.evaluate(`document.querySelector('#manual-stimulus-settings-dialog').close()`);
-            assert.equal(await page.evaluate(`document.querySelector('#simple-n3-status').textContent`), '未开启');
+            assert.equal(await page.evaluate(`document.querySelector('#simple-n3-status').textContent`), '自动光照未开启');
         });
         await step('两个光源可一起手动启动，定时后都停止', async () => {
             await page.evaluate(`document.querySelector('#simple-manual-light').click();document.querySelector('#home-light-channel').value='3';document.querySelector('#home-light-duration').value='2';document.querySelector('#home-light-start').click()`);
             await until(page, `workflowDevice.light[1] && workflowDevice.light[2]`);
+            await until(page, `document.querySelector('#simple-n3-status').textContent === '手动光照中'`);
             assert.match(await page.evaluate(`document.querySelector('#manual-light-live-state').textContent`), /两个光源/);
             await until(page, `!workflowDevice.light[1] && !workflowDevice.light[2]`);
             await page.evaluate(`document.querySelector('#manual-stimulus-settings-dialog').close()`);
@@ -261,7 +262,7 @@ async function feedEpoch(page, mode = 'normal') {
             const sessions = await page.evaluate(`window.desktopAPI.listSessions()`);
             assert.equal(sessions[0].status, 'interrupted');
             assert.equal(sessions[0].reason, 'ble_disconnected');
-            assert.equal(await page.evaluate(`document.querySelector('#simple-n3-status').textContent`), '未开启');
+            assert.equal(await page.evaluate(`document.querySelector('#simple-n3-status').textContent`), '自动光照未开启');
             assert.equal(await page.evaluate(`document.querySelector('#live-n3-probability').textContent`), '--');
         });
         await step('重新连接仍在采集的设备时，可新建记录并再次采集', async () => {
