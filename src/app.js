@@ -1955,7 +1955,7 @@
             deviceId: state.deviceInfo?.deviceId ? Core.bytesToHex(state.deviceInfo.deviceId) : (state.transport?.id || ''),
             selectedChannel: state.selectedChannel,
             sampleRateHz: 250,
-            appVersion: '0.6.0',
+            appVersion: '0.6.1',
             rawStorageVersion: 1,
         });
         updateEegUi();
@@ -2941,7 +2941,7 @@
     }
 
     async function runDeviceDiagnostic() {
-        const report = { startedAt: Core.formatLocalIso(), appVersion: '0.6.0', sdkVersion: SDK.VERSION, success: false };
+        const report = { startedAt: Core.formatLocalIso(), appVersion: '0.6.1', sdkVersion: SDK.VERSION, success: false };
         try {
             if (!await connectBle()) throw new Error('BLE connection failed');
             report.device = {
@@ -3033,7 +3033,7 @@
             renderLiveStatus();
             if (state.activeSession) updateEegUi();
         }, 500);
-        await audit('app_started', { version: '0.6.0', sdkVersion: SDK.VERSION });
+        await audit('app_started', { version: '0.6.1', sdkVersion: SDK.VERSION });
         if (window.desktopAPI.getLaunchMode() === 'device-diagnostic') {
             $('header-status').textContent = 'PRESS ANY KEY TO DIAGNOSE';
             window.addEventListener('keydown', () => runDeviceDiagnostic(), { once: true });

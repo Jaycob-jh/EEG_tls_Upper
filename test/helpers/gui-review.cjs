@@ -67,10 +67,11 @@ exports.run=async ({page,connect,until,step,screenshot,output,root})=>{
     const previous=JSON.parse(fs.readFileSync(process.env.CAOCAO_GUI_SEED_RESULTS || path.join(root,'artifacts/workflow-check-20261104/results.json'),'utf8'));
     const seed=previous.results.find(item=>item.detail?.directory)?.detail?.directory;
     if(seed&&fs.existsSync(seed)){
-        const destination=path.join(output,'documents/BrainLume Desktop/sessions/gui-synthetic-record');
+        const sessionsRoot=(await page.evaluate(`window.desktopAPI.getPaths()`)).sessions;
+        const destination=path.join(sessionsRoot,'gui-synthetic-record');
         fs.cpSync(seed,destination,{recursive:true});
         const metadata=JSON.parse(fs.readFileSync(path.join(destination,'session.json'),'utf8'));
-        const other=path.join(output,'documents/BrainLume Desktop/sessions/gui-other-record');
+        const other=path.join(sessionsRoot,'gui-other-record');
         fs.cpSync(seed,other,{recursive:true});
         fs.writeFileSync(path.join(other,'session.json'),JSON.stringify({...metadata,id:'gui-other-record',planName:'另一条测试记录',rows:1000}));
         fs.writeFileSync(path.join(other,'raw_adc.bin'),fs.readFileSync(path.join(other,'raw_adc.bin')).subarray(0,16000));

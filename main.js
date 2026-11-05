@@ -15,11 +15,16 @@ const { parseSessionStagingHistory } = require('./src/session-history');
 const { EdfWriter } = require('./src/edf');
 const { encodeRawRecords } = require('./src/raw-recording');
 const GithubSync = require('./src/github-sync');
+const Storage = require('./src/storage-paths');
+const APP_VERSION = require('./package.json').version;
 const BLE_DEVICE_NAME = 'BrainLume2.0C';
 const APP_ICON_PATH = path.join(__dirname, 'assets', 'cao-cao-icon-original.png');
 
 app.setName('曹操');
-app.setPath('userData', path.join(app.getPath('appData'), 'brainlume-desktop'));
+const profileDirectory = Storage.profilePath(app.getPath('appData'), APP_VERSION);
+fs.mkdirSync(profileDirectory, { recursive: true, mode: 0o700 });
+app.setPath('userData', profileDirectory);
+app.setPath('sessionData', profileDirectory);
 
 let mainWindow = null;
 let splashWindow = null;
@@ -169,13 +174,7 @@ function screenshotFilePart(value) {
 }
 
 function appDataPaths() {
-    const root = path.join(app.getPath('documents'), 'BrainLume Desktop');
-    return {
-        root,
-        plans: path.join(root, 'plans.json'),
-        sessions: path.join(root, 'sessions'),
-        logs: path.join(root, 'logs'),
-    };
+    return { ...Storage.dataPaths(app.getPath('documents'), APP_VERSION), userData: app.getPath('userData') };
 }
 
 async function ensureDataDirectories() {
@@ -413,7 +412,7 @@ function githubApiRequest(pathname, { method = 'GET', token = '', body = null } 
             callback(value);
         };
         request.setHeader('Accept', 'application/vnd.github+json');
-        request.setHeader('User-Agent', 'CaoCao-EEG-Desktop/0.6.0');
+        request.setHeader('User-Agent', 'CaoCao-EEG-Desktop/0.6.1');
         request.setHeader('X-GitHub-Api-Version', '2022-11-28');
         if (token) request.setHeader('Authorization', `Bearer ${token}`);
         if (body !== null) request.setHeader('Content-Type', 'application/json');

@@ -620,7 +620,7 @@ test('realtime page exposes a 30-second sleep-stage stimulus protocol with safet
     assert.match(app, /n3Postprocessed/);
 });
 
-test('user-visible product name is Cao Cao while the historical data directory stays compatible', () => {
+test('user-visible product name is Cao Cao and storage is version-isolated', () => {
     const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
     const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.html'), 'utf8');
     const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
@@ -629,7 +629,9 @@ test('user-visible product name is Cao Cao while the historical data directory s
     assert.ok(html.includes(`<title>曹操 v${packageJson.version}</title>`));
     assert.match(html, /<strong>曹操<\/strong><span>脑电采集与光照<\/span>/);
     assert.match(main, /title:\s*'曹操'/);
-    assert.match(main, /'BrainLume Desktop'/);
+    assert.match(main, /Storage\.dataPaths/);
+    assert.match(main, /Storage\.profilePath/);
+    assert.doesNotMatch(main, /'brainlume-desktop'/);
     assert.ok(report.includes(`曹操 v${packageJson.version}`));
     assert.match(readme, /^# 曹操$/m);
 });
