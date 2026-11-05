@@ -94,6 +94,7 @@
         sleepHistory: [],
         sleepStimulusProtocol: loadSleepStimulusProtocol(),
         stimulusControlMode: Core.normalizeStimulusControlMode(localStorage.getItem('stimulusControlMode')),
+        preferredLightMode: localStorage.getItem('preferredLightMode') === 'manual' ? 'manual' : 'automatic',
         sleepStimulusGate: null,
         sleepStimulusStopTimer: null,
         sleepStimulusActiveChannel: null,
@@ -275,6 +276,7 @@
             protocol: state.sleepStimulusProtocol, matchedCount: gate?.matchedCount,
             lastTriggeredAt: gate?.lastTriggeredAt, activeUntil: state.manualLightChannel ? state.manualLightUntil : gate?.activeUntil,
             manualLight: Boolean(state.manualLightChannel),
+            manualMode: selectedLightMode() === 'manual',
             lightVerified: state.lightStateVerified, lightPending: state.lightStatePending,
             lightRunning: Boolean(state.lightRunning[1] || state.lightRunning[2]),
         });
@@ -303,6 +305,8 @@
         const targets = p.targetStages.join(' / ') || '未选择目标';
         const manual = Boolean(state.manualLightChannel);
         const emitting = Boolean(state.lightRunning[1] || state.lightRunning[2]);
+        const manualView = selectedLightMode() === 'manual';
+        $('simple-light-title').textContent = manualView ? '手动光照' : '分期自动光照';
         $('simple-device-status').textContent = state.connected ? '已连接' : (state.connecting ? '连接中…' : '未连接');
         $('simple-eeg-status').textContent = state.eegStopPromise ? '正在停止…' : state.eegStopError ? '停止未确认' : state.recordingWriteError ? '保存失败' : state.eegRunning ? '正在采集' : '未开始';
         $('simple-n3-status').textContent = manual ? '手动光照中' : emitting ? '正在光照' : !armed ? '自动光照未开启' : p.shadowMode ? '试运行 · 不发光' : `已开启 · 等待 ${targets}`;
@@ -311,17 +315,41 @@
         $('simple-n3-parameters').textContent = `目标 ${targets} · ${p.lightChannel === 3 ? '两个光源' : `光源${p.lightChannel}`} · ${p.frequencyHz} Hz · ${p.powerPercent}% · 每次 ${lightDuration}`;
         if (manual) $('simple-n3-parameters').textContent = `${state.manualLightChannel === 3 ? '两个光源' : `光源${state.manualLightChannel}`} · ${state.manualLightUntil ? `剩余 ${Math.max(0, Math.ceil((state.manualLightUntil - Date.now()) / 1000))} 秒 · ` : ''}自动触发未开启`;
         else if (emitting) $('simple-n3-parameters').textContent = state.sleepStimulusActiveChannel ? '分期触发光照中' : '设备正在光照，可在实时状态查看详情';
+        if (manualView && !manual && !emitting) {
+            $('simple-n3-status').textContent = '尚未启动';
+            $('simple-n3-parameters').textContent = `${Number($('home-light-channel').value) === 3 ? '两个光源' : `光源${$('home-light-channel').value}`} · ${$('home-light-frequency').value} Hz · ${$('home-light-power').value}% · ${$('home-light-duration').value} 秒`;
+        }
         for (const [id, active] of [['simple-device-status',state.connected],['simple-eeg-status',state.eegRunning],['simple-n3-status',armed || manual || emitting]]) $(id).setAttribute?.('data-active',String(Boolean(active)));
         const button = $('simple-n3-toggle');
         button.textContent = armed ? '关闭自动光照' : '开启自动光照';
         button.className = `button ${armed ? 'danger' : 'primary'}`;
-        button.disabled = !armed && (!state.connected || !state.eegRunning || !state.sleepModelReady || Boolean(state.manualLightChannel) || Boolean(state.eegStopPromise) || Boolean(state.eegStopError));
+        button.disabled = !armed && (!state.connected || !state.eegRunning || !state.sleepModelReady || emitting || Boolean(state.manualLightChannel) || Boolean(state.eegStopPromise) || Boolean(state.eegStopError));
+        if (manualView) {
+            button.textContent = manual ? '停止手动光照' : '开始手动光照';
+            button.className = `button ${manual ? 'danger' : 'primary'}`;
+            button.disabled = !state.connected || Boolean(state.lightStatePending) || (emitting && !manual);
+        }
+        $('simple-n3-settings').textContent = manualView ? '修改光照参数' : '选择分期 / 参数';
+        $('simple-manual-light').textContent = manualView ? '切换自动光照' : '切换手动光照';
         $('simple-session-hint').textContent = !state.connected ? '先点击第 1 步「连接设备」。'
             : manual ? '手动光照正在运行，到时自动关闭。'
+            : manualView ? '手动光照按设定时长运行，无需等待分期。'
             : !state.eegRunning ? '设备已连接，点击第 2 步「开始采集」。'
             : !armed ? '正在采集并保存。需要自动光照时，再开启第 3 步。'
             : p.shadowMode ? '试运行中，只记录，不开灯。'
             : `目标 ${targets}；同一分期连续满足 ${p.consecutiveEpochs} 次（约 ${p.consecutiveEpochs / 2} 分钟），并满足阈值、质量与间隔条件后才发光。`;
+    }
+
+    function selectedLightMode() {
+        if (state.manualLightChannel) return 'manual';
+        if (state.sleepStimulusProtocol.enabled || state.sleepStimulusActiveChannel) return 'automatic';
+        return state.preferredLightMode === 'manual' ? 'manual' : 'automatic';
+    }
+
+    function preferLightMode(mode) {
+        state.preferredLightMode = mode;
+        localStorage.setItem('preferredLightMode', mode);
+        renderSimpleWorkflow();
     }
 
     async function toggleSimpleN3() {
@@ -336,6 +364,7 @@
         }
         if (state.lightRunning[1] || state.lightRunning[2] || planEngine.getRelativeStatus()) throw new Error('请先停止正在运行的手动光照或方案');
         const previousMode = state.stimulusControlMode;
+        preferLightMode('automatic');
         state.stimulusControlMode = 'model';
         localStorage.setItem('stimulusControlMode', 'model');
         renderStimulusSources();
@@ -482,6 +511,7 @@
     function openSleepStimulusSettings() {
         const dialog = $('sleep-stimulus-settings-dialog');
         if (!dialog) return;
+        preferLightMode('automatic');
         $('combined-stimulus-settings-dialog')?.close();
         $('manual-stimulus-settings-dialog')?.close();
         renderStimulusSources();
@@ -496,6 +526,7 @@
     function openManualStimulusSettings() {
         const dialog = $('manual-stimulus-settings-dialog');
         if (!dialog) return;
+        preferLightMode('manual');
         $('combined-stimulus-settings-dialog')?.close();
         $('sleep-stimulus-settings-dialog')?.close();
         renderStimulusSources();
@@ -723,7 +754,7 @@
     function setSleepStimulusStatus(message) {
         renderSimpleWorkflow();
         $('sleep-stimulus-status').textContent = message;
-        $('realtime-closed-loop-state').textContent = message;
+        $('realtime-closed-loop-state').textContent = selectedLightMode() === 'manual' ? '手动模式 · 无需分期触发' : message;
         if (state.sleepStimulusProtocol.enabled && modelStimulusSourceAvailable()) {
             const element = $('stimulus-mode-live');
             if (element) element.textContent = message;
@@ -1182,7 +1213,7 @@
             healthHint.hidden = false;
             healthHint.textContent = !epoch.quality.ok
                 ? `${signalReasonLabel(epoch.quality.reason)}，请检查电极和连接；这段数据不会触发光照。`
-                : '信号正常；满足所选分期条件后才会自动开灯。';
+                : selectedLightMode() === 'manual' ? '信号正常；手动光照不依赖分期。' : '信号正常；满足所选分期条件后才会自动开灯。';
         }
         if (state.badSignalEpochs === 2) {
             toast('脑电连续约 1 分钟异常，请检查电极与连接；异常片段不会触发光照。', 'error');
@@ -2542,10 +2573,14 @@
 
     function setupEvents() {
         $('realtime-history-mode').addEventListener('change', renderSleepHistory);
-        $('simple-manual-light').addEventListener('click', openManualStimulusSettings);
+        $('simple-manual-light').addEventListener('click', () => selectedLightMode() === 'manual' ? openSleepStimulusSettings() : openManualStimulusSettings());
         $('connect-button').addEventListener('click', () => runUiTask(connectBle));
-        $('simple-n3-toggle').addEventListener('click', () => runUiTask(toggleSimpleN3));
+        $('simple-n3-toggle').addEventListener('click', () => runUiTask(() => selectedLightMode() === 'manual'
+            ? state.manualLightChannel ? stopManualLight(state.manualLightChannel, { source: 'manual_home', reason: 'manual_stop' })
+                : startManualLight(Number($('home-light-channel').value), homeLightConfigFromInputs(), { source: 'manual_home' })
+            : toggleSimpleN3()));
         $('simple-n3-settings').addEventListener('click', () => runUiTask(async () => {
+            if (selectedLightMode() === 'manual') return openManualStimulusSettings();
             if (!modelStimulusSourceAvailable()) await changeStimulusControlMode('model');
             openSleepStimulusSettings();
         }));
@@ -2752,7 +2787,7 @@
             if (state.relativePlanRefreshTimer) clearInterval(state.relativePlanRefreshTimer);
             if (state.streamMetricsTimer) clearInterval(state.streamMetricsTimer);
             if (state.sleepStimulusStopTimer) clearTimeout(state.sleepStimulusStopTimer);
-            flushCsvQueue();
+            void flushEdfQueue();
         });
     }
 
@@ -2807,6 +2842,7 @@
                 throw error;
             }
             state.manualLightChannel = channel;
+            preferLightMode('manual');
             state.manualLightUntil = normalizedConfig ? Date.now() + normalizedConfig.durationMs : 0;
             const activeUntil = state.manualLightUntil;
             if (normalizedConfig) state.manualLightStopTimer = setTimeout(() => {
@@ -3031,6 +3067,25 @@
         setupNavigation();
         setupBleChooser();
         setupEvents();
+        try {
+            const saved = JSON.parse(localStorage.getItem('manualLightSettings') || 'null');
+            if (saved && [1, 2, 3].includes(saved.channel)) {
+                const config = validateManualLightConfig(saved);
+                $('home-light-channel').value = String(saved.channel);
+                $('home-light-frequency').value = String(config.frequencyHz);
+                $('home-light-power').value = String(config.powerPercent);
+                $('home-light-duration').value = String(config.durationMs / 1000);
+            }
+        } catch (_) { /* Invalid saved settings fall back to the existing defaults. */ }
+        for (const id of ['home-light-channel', 'home-light-frequency', 'home-light-power', 'home-light-duration']) {
+            $(id).addEventListener('change', () => {
+                try {
+                    const config = validateManualLightConfig(homeLightConfigFromInputs());
+                    localStorage.setItem('manualLightSettings', JSON.stringify({ ...config, channel: Number($('home-light-channel').value) }));
+                } catch (_) { /* Validation remains visible when the user starts output. */ }
+                renderSimpleWorkflow();
+            });
+        }
         $('history-replay-start').addEventListener('click', () => runUiTask(async () => {
             renderHistoryReplay(await window.desktopAPI.startHistoryReplay(state.sleepStimulusProtocol));
         }));

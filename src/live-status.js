@@ -12,6 +12,8 @@
         const q = s.quality;
         const reasons = { raw_saturation: '信号超出范围', amplitude: '幅度异常', flatline: '信号过平', sample_gap: '存在丢帧' };
         const prediction = s.prediction;
+        const probabilityTargets = s.manualMode
+            ? stages.filter(stage => stage === (prediction?.candidateStage || prediction?.stage)) : targets;
         const predictionAge = prediction?.receivedAt ? Math.max(0, Math.floor((now - prediction.receivedAt) / 1000)) : null;
         const validPrediction = s.connected && s.eegRunning && s.modelReady && !interrupted && predictionAge != null && predictionAge < 65;
         const countdown = seconds => { const n = Math.ceil(Math.max(0, seconds)); return `${Math.floor(n / 60)}分${n % 60}秒`; };
@@ -33,8 +35,8 @@
             : `连续满足 ${s.matchedCount || 0} / ${p.consecutiveEpochs} · 等待 ${targets.join(' / ')}`;
         return { connection: s.connected ? '已连接' : s.connecting ? '连接中…' : '未连接',
             acquisition: s.recordingWriteError ? '保存失败，请检查磁盘' : s.eegStopping ? '正在等待设备停止，仍在保存' : s.eegStopError ? '停止未确认，仍在保存' : s.eegRunning ? '正在采集并保存' : '未开始', signal, stage, light, automation,
-            probability: validPrediction ? targets.map(target => `${targets.length > 1 ? `${target} ` : ''}${(Number(prediction.probabilities?.[stages.indexOf(target)] || 0) * 100).toFixed(1)}%`).join(' · ') : '--',
-            probabilityLabel: targets.length === 1 ? `${targets[0]} 估计概率` : '目标分期概率',
+            probability: validPrediction && probabilityTargets.length ? probabilityTargets.map(target => `${probabilityTargets.length > 1 ? `${target} ` : ''}${(Number(prediction.probabilities?.[stages.indexOf(target)] || 0) * 100).toFixed(1)}%`).join(' · ') : '--',
+            probabilityLabel: s.manualMode ? '当前分期概率' : targets.length === 1 ? `${targets[0]} 估计概率` : '目标分期概率',
             freshness: predictionAge == null || !s.eegRunning || !s.connected ? '分期约每 30 秒更新' : `分期更新于 ${predictionAge} 秒前`,
             live: s.connected && s.eegRunning && age != null && !interrupted };
     }

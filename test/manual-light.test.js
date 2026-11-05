@@ -17,7 +17,7 @@ function harness(failStart=false) {
         startLight:async ch=>{calls.push(['start',ch]);if(failStart)throw Error('start failed');state.lightRunning[ch]=true},
         stopLight:async ch=>{calls.push(['stop',ch]);state.lightRunning[ch]=false},
         setTimeout:fn=>{timers.push(fn);return timers.length},clearTimeout(){},
-        renderStimulusSources(){},renderSimpleWorkflow(){},audit:async()=>{},runUiTask:fn=>fn(),
+        renderStimulusSources(){},renderSimpleWorkflow(){},preferLightMode:mode=>{state.preferredLightMode=mode},audit:async()=>{},runUiTask:fn=>fn(),
     });
     const source=fs.readFileSync(path.join(__dirname,'../src/app.js'),'utf8');
     vm.runInContext(source.slice(source.indexOf('    function validateManualLightConfig('),source.indexOf('    async function runUiTask(')),context);

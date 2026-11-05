@@ -93,7 +93,7 @@ async function screenshot(page, name) {
 }
 async function configure(page, { shadow = true, stage = 'N3', consecutive = 2 } = {}) {
     await page.evaluate(`(() => {
-        document.querySelector('[data-page="device"]').click(); document.querySelector('#simple-n3-settings').click();
+        document.querySelector('[data-page="device"]').click(); document.querySelector(document.querySelector('#simple-light-title').textContent === '手动光照' ? '#simple-manual-light' : '#simple-n3-settings').click();
         for(const input of document.querySelectorAll('#target-stage-selector input')) input.checked = (input.id==='sleep-stimulus-n3-enabled' ? 'N3' : input.value) === ${JSON.stringify(stage)};
         for(const [id,value] of Object.entries({'sleep-stimulus-n3-mode':'probability','sleep-stimulus-n3-probability':'70','sleep-stimulus-other-confidence':'70','sleep-stimulus-consecutive':${JSON.stringify(String(consecutive))},'sleep-stimulus-channel':'1','sleep-stimulus-frequency':'40','sleep-stimulus-power':'5','sleep-stimulus-duration':'1','sleep-stimulus-cooldown':'1'})) document.getElementById(id).value=value;
         document.querySelector('#sleep-stimulus-shadow-mode').checked=${shadow}; document.querySelector('#sleep-stimulus-save').click();
@@ -121,7 +121,7 @@ async function feedEpoch(page, mode = 'normal') {
         }
         await step('未连接时禁止采集和手动开灯', async () => {
             assert.equal(await page.evaluate(`document.querySelector('#eeg-toggle-button').disabled`), true);
-            await page.evaluate(`document.querySelector('#simple-manual-light').click()`);
+            await page.evaluate(`document.querySelector(document.querySelector('#simple-light-title').textContent === '手动光照' ? '#simple-n3-settings' : '#simple-manual-light').click()`);
             assert.equal(await page.evaluate(`document.querySelector('#home-light-start').disabled`), true);
             await page.evaluate(`document.querySelector('#manual-stimulus-settings-dialog').close()`);
         });
@@ -172,15 +172,15 @@ async function feedEpoch(page, mode = 'normal') {
             await until(page, `workflowDevice.light[1] === false`);
         });
         await step('手动开灯关闭自动触发，定时停止后不自动恢复', async () => {
-            await page.evaluate(`document.querySelector('#simple-manual-light').click();document.querySelector('#home-light-channel').value='2';document.querySelector('#home-light-duration').value='1';document.querySelector('#home-light-start').click()`);
+            await page.evaluate(`document.querySelector(document.querySelector('#simple-light-title').textContent === '手动光照' ? '#simple-n3-settings' : '#simple-manual-light').click();document.querySelector('#home-light-channel').value='2';document.querySelector('#home-light-duration').value='1';document.querySelector('#home-light-start').click()`);
             await until(page, `workflowDevice.light[2] === true`);
             assert.equal(await page.evaluate(`JSON.parse(localStorage.getItem('sleepStimulusProtocol')).enabled`), false);
             await until(page, `workflowDevice.light[2] === false`);
             await page.evaluate(`document.querySelector('#manual-stimulus-settings-dialog').close()`);
-            assert.equal(await page.evaluate(`document.querySelector('#simple-n3-status').textContent`), '自动光照未开启');
+            assert.equal(await page.evaluate(`document.querySelector('#simple-n3-status').textContent`), '尚未启动');
         });
         await step('两个光源可一起手动启动，定时后都停止', async () => {
-            await page.evaluate(`document.querySelector('#simple-manual-light').click();document.querySelector('#home-light-channel').value='3';document.querySelector('#home-light-duration').value='2';document.querySelector('#home-light-start').click()`);
+            await page.evaluate(`document.querySelector(document.querySelector('#simple-light-title').textContent === '手动光照' ? '#simple-n3-settings' : '#simple-manual-light').click();document.querySelector('#home-light-channel').value='3';document.querySelector('#home-light-duration').value='2';document.querySelector('#home-light-start').click()`);
             await until(page, `workflowDevice.light[1] && workflowDevice.light[2]`);
             await until(page, `document.querySelector('#simple-n3-status').textContent === '手动光照中'`);
             assert.match(await page.evaluate(`document.querySelector('#manual-light-live-state').textContent`), /两个光源/);
@@ -188,13 +188,13 @@ async function feedEpoch(page, mode = 'normal') {
             await page.evaluate(`document.querySelector('#manual-stimulus-settings-dialog').close()`);
         });
         await step('第二个光源启动失败时，两个都回退为关闭', async () => {
-            await page.evaluate(`document.querySelectorAll('.toast').forEach(e=>e.remove());workflowDevice.failStart=2;document.querySelector('#simple-manual-light').click();document.querySelector('#home-light-start').click()`);
+            await page.evaluate(`document.querySelectorAll('.toast').forEach(e=>e.remove());workflowDevice.failStart=2;document.querySelector(document.querySelector('#simple-light-title').textContent === '手动光照' ? '#simple-n3-settings' : '#simple-manual-light').click();document.querySelector('#home-light-start').click()`);
             await until(page, `[...document.querySelectorAll('.toast.error')].some(e=>e.textContent.includes('Invalid parameter'))`);
             assert.equal(await page.evaluate(`workflowDevice.light[1] || workflowDevice.light[2]`), false);
             await page.evaluate(`workflowDevice.failStart=false;document.querySelector('#manual-stimulus-settings-dialog').close()`);
         });
         await step('模拟开灯失败后回退并显示失败', async () => {
-            await page.evaluate(`document.querySelectorAll('.toast').forEach(e=>e.remove());workflowDevice.failStart=true;document.querySelector('#simple-manual-light').click();document.querySelector('#home-light-start').click()`);
+            await page.evaluate(`document.querySelectorAll('.toast').forEach(e=>e.remove());workflowDevice.failStart=true;document.querySelector(document.querySelector('#simple-light-title').textContent === '手动光照' ? '#simple-n3-settings' : '#simple-manual-light').click();document.querySelector('#home-light-start').click()`);
             await until(page, `[...document.querySelectorAll('.toast.error')].some(e=>e.textContent.includes('Invalid parameter'))`);
             assert.equal(await page.evaluate(`workflowDevice.light[1] || workflowDevice.light[2]`), false);
             await page.evaluate(`workflowDevice.failStart=false;document.querySelector('#manual-stimulus-settings-dialog').close()`);
@@ -262,7 +262,7 @@ async function feedEpoch(page, mode = 'normal') {
             const sessions = await page.evaluate(`window.desktopAPI.listSessions()`);
             assert.equal(sessions[0].status, 'interrupted');
             assert.equal(sessions[0].reason, 'ble_disconnected');
-            assert.equal(await page.evaluate(`document.querySelector('#simple-n3-status').textContent`), '自动光照未开启');
+            assert.equal(await page.evaluate(`document.querySelector('#simple-n3-status').textContent`), '尚未启动');
             assert.equal(await page.evaluate(`document.querySelector('#live-n3-probability').textContent`), '--');
         });
         await step('重新连接仍在采集的设备时，可新建记录并再次采集', async () => {

@@ -3,6 +3,12 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { project } = require('../src/live-status');
 const now = 1000000;
+test('manual view shows the current stage probability instead of automatic targets',()=>{
+    const s=project(fixture({manualMode:true,protocol:{enabled:false,targetStages:['N3','REM']}}),now);
+    assert.equal(s.probabilityLabel,'当前分期概率');
+    assert.equal(s.probability,'90.0%');
+    assert.equal(s.automation,'自动触发未开启');
+});
 function fixture(extra = {}) { return { connected: true, eegRunning: true, modelReady: true,
     startedAt: now - 100000, lastSampleAt: now - 20, quality: {ok:true}, lightVerified:true,
     protocol:{enabled:true,shadowMode:false,consecutiveEpochs:15,cooldownMinutes:30},

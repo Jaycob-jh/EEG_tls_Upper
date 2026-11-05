@@ -64,3 +64,21 @@ test('home light card prioritizes manual output and returns to explicit automati
     context.renderSimpleWorkflow();
     assert.equal(elements.get('simple-n3-status').textContent,'自动光照未开启');
 });
+
+test('manual selection survives stopping, requires no EEG, and automatic selection preserves targets',()=>{
+    const {state,context,elements}=harness({connected:true,eegRunning:false});
+    for(const [id,value]of Object.entries({'home-light-channel':'3','home-light-frequency':'40','home-light-power':'5','home-light-duration':'600'}))context.$(id).value=value;
+    context.preferLightMode('manual');
+    assert.equal(elements.get('simple-light-title').textContent,'手动光照');
+    assert.equal(elements.get('simple-n3-toggle').textContent,'开始手动光照');
+    assert.equal(elements.get('simple-n3-toggle').disabled,false);
+    assert.match(elements.get('simple-n3-parameters').textContent,/600 秒/);
+    state.sleepStimulusProtocol.targetStages=['N2','REM'];
+    context.preferLightMode('automatic');
+    assert.equal(elements.get('simple-light-title').textContent,'分期自动光照');
+    assert.match(elements.get('simple-n3-parameters').textContent,/N2 \/ REM/);
+    assert.equal(elements.get('simple-n3-toggle').disabled,true);
+    assert.deepEqual(state.sleepStimulusProtocol.targetStages,['N2','REM']);
+    state.sleepStimulusProtocol.enabled=true;context.preferLightMode('manual');
+    assert.equal(context.selectedLightMode(),'automatic');
+});
