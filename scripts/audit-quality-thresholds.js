@@ -13,6 +13,8 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const Storage = require('../src/storage-paths');
+const APP_VERSION = require('../package.json').version;
 
 function parseArgs(argv) {
     const output = {};
@@ -436,7 +438,7 @@ function buildMarkdown(result) {
 async function main() {
     const args = parseArgs(process.argv.slice(2));
     const projectRoot = path.resolve(argValue(args, 'project', path.join(__dirname, '..')));
-    const sessionsRoot = path.resolve(argValue(args, 'sessions-root', path.join(os.homedir(), 'Documents', 'BrainLume Desktop', 'sessions')));
+    const sessionsRoot = path.resolve(argValue(args, 'sessions-root', Storage.dataPaths(path.join(os.homedir(), 'Documents'), APP_VERSION).sessions));
     const outputJson = path.resolve(argValue(args, 'json', path.join(process.cwd(), 'quality_threshold_audit.json')));
     const outputMarkdown = path.resolve(argValue(args, 'md', path.join(process.cwd(), 'quality_threshold_audit.md')));
     if (!fs.existsSync(sessionsRoot)) throw new Error(`会话目录不存在：${sessionsRoot}`);
@@ -471,7 +473,7 @@ async function main() {
         generatedAt: new Date().toISOString(),
         project: 'EEG_tls_Upper',
         source: {
-            sessionsRootLabel: 'BrainLume Desktop/sessions',
+            sessionsRootLabel: `${path.basename(path.dirname(sessionsRoot))}/${path.basename(sessionsRoot)}`,
             sessionsWithEdf: audited.length,
             skippedSessionDirectories: skipped.length,
             dates: [...new Set(audited.map(session => session.date))].sort(),
