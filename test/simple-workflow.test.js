@@ -14,7 +14,7 @@ function harness(overrides={}) {
     const context=vm.createContext({state,
         $:id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id)},
         modelStimulusSourceAvailable:()=>state.stimulusControlMode!=='manual',
-        localStorage:{setItem(){}},resetRealtimeSleep(){},renderStimulusSources(){},
+        localStorage:{setItem(){}},resetRealtimeSleep(){},renderStimulusSources(){},renderLiveStatus(){},
         applySleepStimulusProtocol:p=>(state.sleepStimulusProtocol=p),setSleepStimulusStatus(){},
         planEngine:{getRelativeStatus:()=>null},audit:async()=>{},
         disableSleepStimulus:async()=>{state.sleepStimulusProtocol.enabled=false},
@@ -52,4 +52,15 @@ test('arming from home preserves non-N3 target selection',async()=>{
     await h.context.toggleSimpleN3();
     assert.deepEqual(h.state.sleepStimulusProtocol.targetStages,['N2','REM']);
     assert.equal(h.state.sleepStimulusProtocol.enabled,true);
+});
+
+test('home light card prioritizes manual output and returns to explicit automatic-off status',()=>{
+    const {state,context,elements}=harness({connected:true,eegRunning:true,manualLightChannel:3,manualLightUntil:Date.now()+600000,lightRunning:{1:true,2:true}});
+    context.renderSimpleWorkflow();
+    assert.equal(elements.get('simple-n3-status').textContent,'手动光照中');
+    assert.match(elements.get('simple-n3-parameters').textContent,/两个光源.*剩余.*自动触发未开启/);
+    assert.doesNotMatch(elements.get('simple-n3-parameters').textContent,/目标|12 分钟/);
+    state.manualLightChannel=null;state.lightRunning={1:false,2:false};
+    context.renderSimpleWorkflow();
+    assert.equal(elements.get('simple-n3-status').textContent,'自动光照未开启');
 });

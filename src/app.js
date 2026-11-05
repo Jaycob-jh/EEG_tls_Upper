@@ -301,18 +301,23 @@
         const p = state.sleepStimulusProtocol;
         const armed = p.enabled && modelStimulusSourceAvailable();
         const targets = p.targetStages.join(' / ') || '未选择目标';
+        const manual = Boolean(state.manualLightChannel);
+        const emitting = Boolean(state.lightRunning[1] || state.lightRunning[2]);
         $('simple-device-status').textContent = state.connected ? '已连接' : (state.connecting ? '连接中…' : '未连接');
         $('simple-eeg-status').textContent = state.eegStopPromise ? '正在停止…' : state.eegStopError ? '停止未确认' : state.recordingWriteError ? '保存失败' : state.eegRunning ? '正在采集' : '未开始';
-        $('simple-n3-status').textContent = !armed ? '未开启' : p.shadowMode ? '试运行 · 不发光' : state.sleepStimulusActiveChannel ? '正在光照' : `已开启 · 等待 ${targets}`;
+        $('simple-n3-status').textContent = manual ? '手动光照中' : emitting ? '正在光照' : !armed ? '自动光照未开启' : p.shadowMode ? '试运行 · 不发光' : `已开启 · 等待 ${targets}`;
         const lightDuration = p.durationSeconds < 60 ? `${p.durationSeconds} 秒`
             : `${Math.floor(p.durationSeconds / 60)} 分${p.durationSeconds % 60 ? ` ${p.durationSeconds % 60} 秒` : '钟'}`;
         $('simple-n3-parameters').textContent = `目标 ${targets} · ${p.lightChannel === 3 ? '两个光源' : `光源${p.lightChannel}`} · ${p.frequencyHz} Hz · ${p.powerPercent}% · 每次 ${lightDuration}`;
-        for (const [id, active] of [['simple-device-status',state.connected],['simple-eeg-status',state.eegRunning],['simple-n3-status',armed]]) $(id).setAttribute?.('data-active',String(Boolean(active)));
+        if (manual) $('simple-n3-parameters').textContent = `${state.manualLightChannel === 3 ? '两个光源' : `光源${state.manualLightChannel}`} · ${state.manualLightUntil ? `剩余 ${Math.max(0, Math.ceil((state.manualLightUntil - Date.now()) / 1000))} 秒 · ` : ''}自动触发未开启`;
+        else if (emitting) $('simple-n3-parameters').textContent = state.sleepStimulusActiveChannel ? '分期触发光照中' : '设备正在光照，可在实时状态查看详情';
+        for (const [id, active] of [['simple-device-status',state.connected],['simple-eeg-status',state.eegRunning],['simple-n3-status',armed || manual || emitting]]) $(id).setAttribute?.('data-active',String(Boolean(active)));
         const button = $('simple-n3-toggle');
         button.textContent = armed ? '关闭自动光照' : '开启自动光照';
         button.className = `button ${armed ? 'danger' : 'primary'}`;
         button.disabled = !armed && (!state.connected || !state.eegRunning || !state.sleepModelReady || Boolean(state.manualLightChannel) || Boolean(state.eegStopPromise) || Boolean(state.eegStopError));
         $('simple-session-hint').textContent = !state.connected ? '先点击第 1 步「连接设备」。'
+            : manual ? '手动光照正在运行，到时自动关闭。'
             : !state.eegRunning ? '设备已连接，点击第 2 步「开始采集」。'
             : !armed ? '正在采集并保存。需要自动光照时，再开启第 3 步。'
             : p.shadowMode ? '试运行中，只记录，不开灯。'
