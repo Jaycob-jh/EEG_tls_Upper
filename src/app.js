@@ -1439,7 +1439,9 @@
     async function disconnectBle() {
         if (!state.client && !state.transport) return;
         await safeStop('manual_disconnect');
+        state.disconnecting = true;
         try { await state.client?.disconnect(); } catch (error) { logProtocol('ERR', error.message, 'error'); }
+        finally { state.disconnecting = false; }
         state.connected = false;
         state.client = null;
         state.transport = null;
@@ -1458,6 +1460,7 @@
 
     async function handleTransportDisconnected() {
         clearManualLightTracking();
+        if (state.disconnecting) return;
         if (!state.connected) return;
         planEngine.stopRelative('ble_disconnected');
         state.connected = false;
@@ -1689,6 +1692,7 @@
         renderNextAction();
         $('impedance-button').disabled = true;
         $('metric-impedance-state').textContent = '正在采集 1024 点…';
+        let measurementError = null;
         try {
             const expectedConfig = await applyChannel(channel, true);
             const registerReadback = await client.readAds1299Registers();
@@ -1729,6 +1733,11 @@
             addActivity(`CH${channel} 阻抗 ${value.toFixed(2)} kΩ`);
             await audit('impedance_measured', { channel, kohm: value });
             return value;
+        } catch (error) {
+            measurementError = error;
+            $('metric-impedance-state').textContent = `检测失败：${error.message}`;
+            await audit('impedance_measure_failed', { channel, error: error.message }, 'error');
+            throw error;
         } finally {
             try {
                 await stopEegOnDevice();
@@ -1738,9 +1747,12 @@
                 await new Promise(resolve => setTimeout(resolve, 150));
                 await applyChannel(channel, false);
             } catch (error) {
-                $('metric-impedance-state').textContent = '检测结束未完成，请先重试停止';
+                const stopped = !state.impedanceMode;
+                const message = stopped ? '采集已停止，但恢复脑电配置失败；开始采集时将重新配置' : '停止尚未确认，请先重试停止';
+                $('metric-impedance-state').textContent = measurementError ? `检测失败：${measurementError.message}；${message}` : message;
                 logProtocol('ERR', error.message, 'error');
-                throw error;
+                await audit('impedance_cleanup_failed', { channel, stopped, error: error.message }, 'error');
+                throw measurementError ? new Error(`${measurementError.message}；${message}：${error.message}`) : error;
             } finally { state.impedanceBusy = false; state.cancelImpedanceWaiter = null; updateEegUi(); renderNextAction(); }
         }
     }

@@ -64,6 +64,23 @@ test('failed impedance stop does not reconfigure a device that may still be samp
     assert.deepEqual(writes,[true]);assert.equal(state.impedanceMode,true);
 });
 
+test('impedance cleanup distinguishes failed restoration from an unconfirmed stop and retains measurement error', async () => {
+    const state={eegRunning:false,processor:{reset(){},impedance:null},selectedChannel:2};
+    const elements=new Map();const $=id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id);};
+    const context=vm.createContext({state,$,setTimeout,clearTimeout,
+        requireClient:()=>({readAds1299Registers:async()=>({values:[]}),startEeg:async()=>{throw Error('measurement rejected');}}),
+        applyChannel:async(_channel,impedance)=>{if(!impedance)throw Error('restore rejected');return [];},
+        SDK:{ads1299:{compareAdsConfig:()=>[]},impedance:{ImpedanceEstimator:class {}}},
+        stopEegOnDevice:async()=>{state.deviceEegRunning=false;},
+        audit:async()=>{},renderNextAction(){},logProtocol(){},updateEegUi(){},Core:{bytesToHex:()=>''},
+    });
+    vm.runInContext(extract('    async function measureImpedance(', '    const LIGHT_MAX_ATTEMPTS'),context);
+    await assert.rejects(context.measureImpedance(),/measurement rejected.*restore rejected/);
+    assert.equal(state.impedanceMode,false);assert.equal(state.impedanceBusy,false);
+    assert.match(elements.get('metric-impedance-state').textContent,/采集已停止.*恢复脑电配置失败/);
+    assert.doesNotMatch(elements.get('metric-impedance-state').textContent,/重试停止/);
+});
+
 test('battery refresh during EEG uses an explicitly labelled previous reading and sends no device command', async () => {
     let requests=0,notices=0;const elements=new Map();
     const state={eegRunning:true,lastDeviceStatus:{batteryLevel:80},lastDeviceStatusTime:'12:00:00'};
