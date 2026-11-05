@@ -1616,13 +1616,20 @@
             await stopEegOnDevice();
             await new Promise(resolve => setTimeout(resolve, 2));
         }
-        await client.configureEeg(expected);
+        let commandError = null;
+        try { await client.configureEeg(expected); }
+        catch (error) { commandError = error; }
         await new Promise(resolve => setTimeout(resolve, 2));
         const after = await client.readAds1299Registers();
         const mismatches = SDK.ads1299.compareAdsConfig(expected, after.values);
         if (mismatches.length) {
             const first = mismatches[0];
+            if (commandError) throw commandError;
             throw new Error(`ADS1299 配置回读不一致: 0x${first.address.toString(16).padStart(2, '0')} expected=0x${first.expected.toString(16).padStart(2, '0')} actual=0x${first.actual.toString(16).padStart(2, '0')}`);
+        }
+        if (commandError) {
+            await audit('eeg_config_reply_failed_but_verified', { channel, impedance, error: commandError.message, registersHex: Core.bytesToHex(after.values) }, 'warn');
+            logProtocol('WARN', `设备配置回复异常，但寄存器回读已确认一致：${commandError.message}`, 'warning');
         }
         await audit('eeg_config_verified', { channel, impedance, registersHex: Core.bytesToHex(after.values) });
         return { config: expected, readback: after.values, skippedWrite: false };
@@ -1727,8 +1734,10 @@
         state.impedanceMode = true;
         renderNextAction();
         $('impedance-button').disabled = true;
+        $('metric-impedance').textContent = '-- kΩ';
         $('metric-impedance-state').textContent = '正在采集 1024 点…';
         let measurementError = null;
+        state.impedanceDiagnostics = { received: 0, windows: 0, lastKohm: null, maxAbsRaw: 0, saturated: 0 };
         try {
             const expectedConfig = await applyChannel(channel, true);
             const registerReadback = await client.readAds1299Registers();
@@ -1749,7 +1758,12 @@
                 const timer = setTimeout(() => {
                     state.impedanceWaiter = null;
                     state.cancelImpedanceWaiter = null;
-                    reject(new Error('阻抗窗口采集超时'));
+                    const d = state.impedanceDiagnostics;
+                    const message = d && d.received >= 1024
+                        ? d.saturated >= d.received * 0.99 ? '阻抗信号超出设备量程，请检查电极、参考与接线'
+                            : '已收到阻抗数据，但未得到有效测量值，请检查电极与连接'
+                        : `阻抗数据不足（${d?.received || 0}/1024 点），请检查设备连接`;
+                    reject(new Error(message));
                 }, 8000);
                 state.cancelImpedanceWaiter = () => {
                     clearTimeout(timer);state.impedanceWaiter=null;state.cancelImpedanceWaiter=null;
@@ -1772,7 +1786,7 @@
         } catch (error) {
             measurementError = error;
             $('metric-impedance-state').textContent = `检测失败：${error.message}`;
-            await audit('impedance_measure_failed', { channel, error: error.message }, 'error');
+            await audit('impedance_measure_failed', { channel, error: error.message, diagnostics: state.impedanceDiagnostics }, 'error');
             throw error;
         } finally {
             try {
@@ -1789,7 +1803,7 @@
                 logProtocol('ERR', error.message, 'error');
                 await audit('impedance_cleanup_failed', { channel, stopped, error: error.message }, 'error');
                 throw measurementError ? new Error(`${measurementError.message}；${message}：${error.message}`) : error;
-            } finally { state.impedanceBusy = false; state.cancelImpedanceWaiter = null; updateEegUi(); renderNextAction(); }
+            } finally { state.impedanceBusy = false; state.impedanceDiagnostics = null; state.cancelImpedanceWaiter = null; updateEegUi(); renderNextAction(); }
         }
     }
 
@@ -2048,6 +2062,13 @@
             }
             state.sampleIndex++;
             if (state.edfQueue.length >= 512) flushEdfQueue();
+        }
+        if (state.impedanceMode && state.impedanceDiagnostics) {
+            const d = state.impedanceDiagnostics;
+            d.received++;
+            d.maxAbsRaw = Math.max(d.maxAbsRaw, Math.abs(rawCode));
+            if (Math.abs(rawCode) >= 0.99 * 8388607) d.saturated++;
+            if (result.impedanceKohm) { d.windows++; d.lastKohm = result.impedanceKohm[channelIndex]; }
         }
         if (result.impedanceKohm && state.impedanceWaiter && Math.abs(rawCode) < 0.99 * 8388607) state.impedanceWaiter(result.impedanceKohm);
         const now = performance.now();
