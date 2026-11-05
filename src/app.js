@@ -1737,7 +1737,7 @@
         $('metric-impedance').textContent = '-- kΩ';
         $('metric-impedance-state').textContent = '正在采集 1024 点…';
         let measurementError = null;
-        state.impedanceDiagnostics = { received: 0, windows: 0, lastKohm: null, maxAbsRaw: 0, saturated: 0 };
+        state.impedanceDiagnostics = { received: 0, windows: 0, lastKohm: null, maxAbsRaw: 0, saturated: 0, cleanSamples: 0, longestCleanRun: 0, rawWindow: [] };
         try {
             const expectedConfig = await applyChannel(channel, true);
             const registerReadback = await client.readAds1299Registers();
@@ -1761,7 +1761,8 @@
                     const d = state.impedanceDiagnostics;
                     const message = d && d.received >= 1024
                         ? d.saturated >= d.received * 0.99 ? '阻抗信号超出设备量程，请检查电极、参考与接线'
-                            : '已收到阻抗数据，但未得到有效测量值，请检查电极与连接'
+                            : d.longestCleanRun < 1024 ? '未收到连续且未超量程的阻抗数据，请检查电极与连接'
+                                : '已收到阻抗数据，但未得到有效测量值，请检查电极与连接'
                         : `阻抗数据不足（${d?.received || 0}/1024 点），请检查设备连接`;
                     reject(new Error(message));
                 }, 8000);
@@ -1786,7 +1787,19 @@
         } catch (error) {
             measurementError = error;
             $('metric-impedance-state').textContent = `检测失败：${error.message}`;
-            await audit('impedance_measure_failed', { channel, error: error.message, diagnostics: state.impedanceDiagnostics }, 'error');
+            const { rawWindow, ...diagnostics } = state.impedanceDiagnostics;
+            const estimator = state.processor?.impedance;
+            const filtered = estimator?.buffers?.[channel - 1];
+            if (filtered && filtered.length === estimator.options.fftSize && rawWindow.length === filtered.length) {
+                const { sampleRateHz, excitationHz, gain, vrefVolts } = estimator.options;
+                const rawPeak = SDK.impedance.tonePeakCodes(rawWindow, sampleRateHz, excitationHz);
+                const filteredPeak = SDK.impedance.tonePeakCodes(filtered, sampleRateHz, excitationHz);
+                diagnostics.excitationHz = excitationHz;
+                diagnostics.rawTonePeakUv = SDK.data.codeToMicrovolts(rawPeak, { gain, vrefVolts });
+                diagnostics.filteredTonePeakUv = SDK.data.codeToMicrovolts(filteredPeak, { gain, vrefVolts });
+                diagnostics.beforeSeriesCorrectionKohm = SDK.impedance.impedanceKohmFromPeakCodes(filteredPeak, { ...estimator.options, seriesOhms: 0 });
+            }
+            await audit('impedance_measure_failed', { channel, error: error.message, diagnostics }, 'error');
             throw error;
         } finally {
             try {
@@ -2066,11 +2079,14 @@
         if (state.impedanceMode && state.impedanceDiagnostics) {
             const d = state.impedanceDiagnostics;
             d.received++;
+            d.rawWindow[(d.received - 1) % 1024] = rawCode;
             d.maxAbsRaw = Math.max(d.maxAbsRaw, Math.abs(rawCode));
-            if (Math.abs(rawCode) >= 0.99 * 8388607) d.saturated++;
+            if (Math.abs(rawCode) >= 0.99 * 8388607) { d.saturated++; d.cleanSamples = 0; }
+            else d.cleanSamples = delta === 1 ? d.cleanSamples + 1 : 1;
+            d.longestCleanRun = Math.max(d.longestCleanRun, d.cleanSamples);
             if (result.impedanceKohm) { d.windows++; d.lastKohm = result.impedanceKohm[channelIndex]; }
+            if (result.impedanceKohm && d.cleanSamples >= 1024) state.impedanceWaiter?.(result.impedanceKohm);
         }
-        if (result.impedanceKohm && state.impedanceWaiter && Math.abs(rawCode) < 0.99 * 8388607) state.impedanceWaiter(result.impedanceKohm);
         const now = performance.now();
         if (now - state.lastUiUpdate > 150) {
             state.lastUiUpdate = now;

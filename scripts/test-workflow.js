@@ -137,7 +137,10 @@ async function feedEpoch(page, mode = 'normal') {
             await until(page, `document.querySelector('#indicator-toggle-button').getAttribute('aria-pressed')==='false'`);
             await page.evaluate(`document.querySelector('#impedance-button').click()`);
             await until(page, `workflowDevice.eeg===true`);
-            await page.evaluate(`workflowDevice.feed(1024)`);
+            await page.evaluate(`(async()=>{await workflowDevice.feed(1,'saturated');await workflowDevice.feed(1023);})()`);
+            assert.equal(await page.evaluate(`document.querySelector('#metric-impedance').textContent`), '-- kΩ');
+            assert.equal(await page.evaluate(`workflowDevice.eeg`), true);
+            await page.evaluate(`workflowDevice.feed(1)`);
             await until(page, `!document.querySelector('#impedance-button').disabled && workflowDevice.eeg===false`);
             assert.doesNotMatch(await page.evaluate(`document.querySelector('#metric-impedance').textContent`), /--/);
         });
