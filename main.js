@@ -11,6 +11,7 @@ const { Worker } = require('node:worker_threads');
 const Core = require('./src/core');
 const AnalysisReport = require('./src/analysis-report');
 const { readSavedYasaResult } = require('./src/saved-yasa');
+const { registerResearchReview } = require('./src/n3-research-review');
 const { parseSessionStagingHistory } = require('./src/session-history');
 const { EdfWriter } = require('./src/edf');
 const { encodeRawRecords } = require('./src/raw-recording');
@@ -141,6 +142,9 @@ function configureApplicationMenu() {
             { label: '打开会话目录', click: () => { void openDataDirectory('sessions'); } },
             { label: '打开日志目录', click: () => { void openDataDirectory('logs'); } },
             { type: 'separator' },
+            { label: '离线分期对照…', click: () => {
+                void openAnalysisWindow('').catch(error => dialog.showErrorBox('无法打开记录分析', error.message));
+            } },
             { label: '导出当前分析报告', click: () => { void exportCurrentAnalysisFromMenu(); } },
             { label: '保存当前页面截图', click: () => { void saveFocusedScreenshotFromMenu(); } },
             { type: 'separator' },
@@ -1321,6 +1325,53 @@ async function runYasaStaging(sessionId) {
     ].filter(Boolean).join('\n'));
 }
 
+let anySleepRunning = false;
+
+async function runAnySleepComparison(sender, sessionId) {
+    if (!analysisWindow || analysisWindow.isDestroyed() || analysisWindow.webContents.id !== sender.id) {
+        throw new Error('请在记录分析窗口运行离线对照');
+    }
+    if (anySleepRunning) throw new Error('已有一个离线分期对照正在运行');
+    anySleepRunning = true;
+    try {
+        const options = { rootDir: __dirname };
+        if (sessionId) {
+            const selected = (await listSessions()).find(item => item.id === sessionId);
+            if (!selected || selected.status === 'recording') throw new Error('请选择已结束的采集记录');
+            options.edfPath = path.join(selected.directory, 'eeg_raw.edf');
+            options.eventsPath = path.join(selected.directory, 'events.jsonl');
+            if (!isSessionPath(options.edfPath) || !isSessionPath(options.eventsPath)) {
+                throw new Error('记录路径不在会话目录中');
+            }
+            if (Number.isSafeInteger(selected.rows) && selected.rows > 0) options.rows = selected.rows;
+        } else {
+            const selected = await dialog.showOpenDialog(analysisWindow, {
+                title: '选择 CH2 EDF 进行离线分期对照',
+                properties: ['openFile'],
+                filters: [{ name: 'EEG EDF', extensions: ['edf'] }],
+            });
+            if (selected.canceled || !selected.filePaths.length) return null;
+            options.edfPath = selected.filePaths[0];
+        }
+        const local = await readJson(path.join(__dirname, 'python', 'anysleep.local.json'), {});
+        options.python = local.python || process.env.BRAINLUME_ANYSLEEP_PYTHON;
+        options.outputRoot = local.outputRoot || path.join(appDataPaths().root, 'analysis', 'anysleep');
+        return await new Promise((resolve, reject) => {
+            const worker = new Worker(path.join(__dirname, 'src', 'anysleep-comparison.js'), { workerData: options });
+            worker.on('message', message => {
+                if (message.progress) {
+                    if (!sender.isDestroyed()) sender.send('analysis:anysleep-progress', message.progress);
+                } else if (message.result) resolve(message.result);
+                else if (message.error) reject(new Error(message.error));
+            });
+            worker.once('error', reject);
+            worker.once('exit', code => reject(new Error('离线分期进程已退出（' + code + '）')));
+        });
+    } finally {
+        anySleepRunning = false;
+    }
+}
+
 function analysisRequest(entry, action, payload = {}, timeoutMs = 300000) {
     const id = crypto.randomUUID();
     return new Promise((resolve, reject) => {
@@ -1546,6 +1597,9 @@ function registerIpc() {
     ));
     ipcMain.handle('analysis:export', (_event, analysisId) => exportAnalysisReport(analysisId));
     ipcMain.handle('analysis:yasa', (_event, sessionId) => runYasaStaging(sessionId));
+    ipcMain.handle('analysis:anysleep', (event, sessionId) => runAnySleepComparison(event.sender, sessionId));
+    registerResearchReview(ipcMain, path.join(__dirname, 'n3-research.local.json'),
+        () => analysisWindow && !analysisWindow.isDestroyed() ? analysisWindow.webContents : null);
     ipcMain.handle('analysis:close', (_event, analysisId) => closeAnalysis(analysisId));
     ipcMain.handle('sleep:model-info', () => sleepRequest('info'));
     ipcMain.handle('sleep:infer', (_event, payload) => sleepRequest('infer', payload));

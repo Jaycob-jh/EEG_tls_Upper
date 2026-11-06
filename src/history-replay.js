@@ -100,11 +100,11 @@ function simulate(predictions,protocol){
     return {protocol:p,triggers,reasons,hardwareCommandsSent:0};
 }
 
-async function inferAll(data,model,ort,onProgress=()=>{},isCancelled=()=>false){
+async function inferAll(data,model,ort,onProgress=()=>{},isCancelled=()=>false,mode='causal'){
     if(data.rate!==250)throw Error(`当前实时回放要求 250 Hz，该记录为 ${data.rate} Hz`);
     const filter=new SDK.filters.EegFilterBank(250,1,SDK.filters.MODEL_TRAINING_PRESET,{initialization:'zero',implementation:'direct2t'});
     const pipeline=new Sleep.RealtimeSleepPipeline({inputRateHz:250,modelRateHz:100,epochSeconds:30,temporalContext:21,qualityWarmupSeconds:5});
-    const smoother=new Sleep.SleepStageSmoother({alpha:.5}),post=new Post.N3Postprocessor({mode:'causal'});
+    const smoother=new Sleep.SleepStageSmoother({alpha:.5}),post=new Post.N3Postprocessor({mode});
     const predictions=[],qualityCounts={};let previousSeq=null,duplicates=0,missing=0,nonmonotonic=0,lastTime=-Infinity;
     for(let index=0;index<data.values.length;index++){
         if(index%7500===0&&isCancelled())throw Error('回放已停止');
@@ -117,7 +117,7 @@ async function inferAll(data,model,ort,onProgress=()=>{},isCancelled=()=>false){
         qualityCounts[epoch.quality.reason]=(qualityCounts[epoch.quality.reason]||0)+1;
         const observedEndMs=Number.isFinite(recordedTime)?recordedTime:epoch.totalEpochs*30000;
         if(epoch.gapSamples){predictions.push({epochIndex:epoch.totalEpochs-1,skipped:true,quality:epoch.quality,observedEndMs});continue;}
-        const input=pipeline.onlineInferenceInput();if(!input)continue;
+        const input=mode==='center'?pipeline.inferenceInput():pipeline.onlineInferenceInput();if(!input)continue;
         const feeds={eeg:new ort.Tensor('float32',Float32Array.from(input.eeg),[1,21,1,3000]),
             epoch_index:new ort.Tensor('float32',Float32Array.from(input.epochIndex),[1,21,1]),
             epoch_cycle_index:new ort.Tensor('float32',Float32Array.from(input.epochCycleIndex),[1,21,5])};
