@@ -59,22 +59,23 @@ test('failed impedance stop does not reconfigure a device that may still be samp
         stopEegOnDevice:async()=>{throw Error('stop not confirmed');},
         audit:async()=>{},renderNextAction(){},logProtocol(){},updateEegUi(){},Core:{bytesToHex:()=>''},
     });
-    vm.runInContext(extract('    async function measureImpedance(', '    const LIGHT_MAX_ATTEMPTS'),context);
+    vm.runInContext(extract('    function cancelImpedanceMeasurement(', '    const LIGHT_MAX_ATTEMPTS'),context);
     await assert.rejects(context.measureImpedance(),/stop not confirmed/);
     assert.deepEqual(writes,[true]);assert.equal(state.impedanceMode,true);
 });
 
 test('impedance cleanup distinguishes failed restoration from an unconfirmed stop and retains measurement error', async () => {
     const state={eegRunning:false,processor:{reset(){},impedance:null},selectedChannel:2};
+    const client={readAds1299Registers:async()=>({values:[]}),startEeg:async()=>{throw Error('measurement rejected');}};
     const elements=new Map();const $=id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id);};
     const context=vm.createContext({state,$,setTimeout,clearTimeout,
-        requireClient:()=>({readAds1299Registers:async()=>({values:[]}),startEeg:async()=>{throw Error('measurement rejected');}}),
+        requireClient:()=>client,
         applyChannel:async(_channel,impedance)=>{if(!impedance)throw Error('restore rejected');return [];},
         SDK:{ads1299:{compareAdsConfig:()=>[]},impedance:{ImpedanceEstimator:class {}}},
         stopEegOnDevice:async()=>{state.deviceEegRunning=false;},
         audit:async()=>{},renderNextAction(){},logProtocol(){},updateEegUi(){},Core:{bytesToHex:()=>''},
     });
-    vm.runInContext(extract('    async function measureImpedance(', '    const LIGHT_MAX_ATTEMPTS'),context);
+    vm.runInContext(extract('    function cancelImpedanceMeasurement(', '    const LIGHT_MAX_ATTEMPTS'),context);
     await assert.rejects(context.measureImpedance(),/measurement rejected.*restore rejected/);
     assert.equal(state.impedanceMode,false);assert.equal(state.impedanceBusy,false);
     assert.match(elements.get('metric-impedance-state').textContent,/采集已停止.*恢复脑电配置失败/);
@@ -100,7 +101,7 @@ test('a complete saturated impedance window is reported as an unusable signal ra
         applyChannel:async()=>[],SDK:{ads1299:{compareAdsConfig:()=>[]},impedance:{ImpedanceEstimator:class {}}},
         stopEegOnDevice:async()=>{},audit:async()=>{},renderNextAction(){},logProtocol(){},updateEegUi(){},Core:{bytesToHex:()=>''},
     });
-    vm.runInContext(extract('    async function measureImpedance(', '    const LIGHT_MAX_ATTEMPTS'),context);
+    vm.runInContext(extract('    function cancelImpedanceMeasurement(', '    const LIGHT_MAX_ATTEMPTS'),context);
     await assert.rejects(context.measureImpedance(),/阻抗信号超出设备量程/);
     assert.equal(state.impedanceMode,false);assert.equal(state.impedanceBusy,false);
 });
@@ -118,7 +119,7 @@ test('battery refresh during EEG uses an explicitly labelled previous reading an
 test('disk-write failure stops acquisition without awaiting its own pending flush', async () => {
     let stopped = false, stopCount = 0;
     const state = { activeSession: { id: 'night' }, edfQueue: [{ rawCode: 1, seq: 1, elapsedMs: 4 }],
-        edfFlushPromise: Promise.resolve(), sessionEventPromise: Promise.resolve() };
+        edfFlushPromise: Promise.resolve(), pendingGapEvents: [] };
     const context = vm.createContext({ state, Promise, setTimeout, queueMicrotask,
         window: { desktopAPI: { appendSessionSamples: async () => { throw Error('disk full'); }, stopSession: async () => { stopped = true; return {}; } } },
         logProtocol() {}, toast() {}, audit: async () => {}, updateEegUi() {}, loadSessions: async () => {}, addActivity() {},
@@ -141,7 +142,7 @@ function recordingHarness({ appendFailure = false, metadataFailure = false } = {
         edfWriter: { finalize: async () => { finalized++; return { receivedSamples: 512, records: 3, paddedSamples: 238 }; } },
     };
     const activeRecordings = new Map([['night', recording]]);
-    const context = vm.createContext({ activeRecordings, path,
+    const context = vm.createContext({ activeRecordings, path, recordingPowerBlocker: null,
         fsp: { appendFile: async () => {}, rename: async (from, to) => { assert.ok(!renames.includes(from)); renames.push(from); } },
         nowIso: () => '2026-11-04T18:00:00+08:00',
         prepareAutomaticGithubUpload: async () => ({ status: 'disabled' }),
@@ -176,4 +177,51 @@ test('metadata save failure leaves finalization retryable without renaming final
     await h.context.stopRecording('night');
     assert.equal(h.activeRecordings.size, 0);
     assert.deepEqual(h.counts(), { finalized: 1, renames: 2 });
+});
+
+for (const durationSeconds of [60, 1800]) test(`device diagnostic captures and saves ${durationSeconds} seconds without counting stop latency`, async () => {
+    let clock = 0;
+    let onData;
+    const listeners = new Map();
+    const reports = [];
+    const expectedSamples = durationSeconds * 250;
+    const state = {
+        connected: true, eegRunning: false, activeSession: null,
+        streamStats: { receivedFrames: 0, lostFrames: 0, gapEvents: 0 },
+        transport: { name: 'BrainLume2.0C', onData: callback => { onData = callback; return () => {}; } },
+    };
+    const client = {
+        on: (event, callback) => { listeners.set(event, callback); return () => listeners.delete(event); },
+        readAds1299Registers: async () => ({ values: [0x1e, 0x96] }),
+    };
+    const context = vm.createContext({
+        state, structuredClone, $: () => ({}), Core: { formatLocalIso: () => 'test' },
+        SDK: { VERSION: 'test', FUNC: { EEG_RAW: 0x22 }, ads1299: { sampleRateFromConfig1: value => value === 0x96 ? 250 : null } },
+        performance: { now: () => clock }, connectBle: async () => true, requireClient: () => client,
+        queryStatus: async () => ({ eegRunning: false, light1Running: false, light2Running: false }),
+        startEeg: async () => { state.eegRunning = true; state.activeSession = { id: 'test' }; },
+        delay: async milliseconds => {
+            clock += milliseconds;
+            for (let index = 0; index < 1250; index++) {
+                onData(new Uint8Array(37));
+                listeners.get('frame')({ func: 0x22 });
+                listeners.get('eeg')();
+                state.streamStats.receivedFrames++;
+            }
+        },
+        stopEeg: async () => { clock += 4000; state.eegRunning = false; state.activeSession = null; },
+        window: { desktopAPI: {
+            listSessions: async () => [{ id: 'test', rows: expectedSamples, status: 'completed' }],
+            completeDiagnostic: async report => reports.push(report),
+        } },
+    });
+    vm.runInContext(extract('    async function runDeviceDiagnostic(', '    function renderHistoryReplay('), context);
+    await context.runDeviceDiagnostic(durationSeconds);
+    assert.equal(reports[0].success, true);
+    assert.equal(reports[0].eegStream.elapsedSeconds, durationSeconds);
+    assert.equal(reports[0].eegStream.samplesPerSecond, 250);
+    assert.equal(reports[0].eegStream.incoming.notifications, expectedSamples);
+    assert.equal(reports[0].eegStream.incoming.validEegFrames, expectedSamples);
+    assert.equal(reports[0].eegStream.incoming.decodedEegFrames, expectedSamples);
+    assert.equal(reports[0].recording.rows, expectedSamples);
 });

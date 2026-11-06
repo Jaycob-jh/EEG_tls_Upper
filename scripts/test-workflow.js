@@ -137,7 +137,17 @@ async function feedEpoch(page, mode = 'normal') {
             await until(page, `document.querySelector('#indicator-toggle-button').getAttribute('aria-pressed')==='false'`);
             await page.evaluate(`document.querySelector('#impedance-button').click()`);
             await until(page, `workflowDevice.eeg===true`);
-            await page.evaluate(`(async()=>{await workflowDevice.feed(1,'saturated');await workflowDevice.feed(1023);})()`);
+            await page.evaluate(`(async()=>{await workflowDevice.feed(1,'saturated');await workflowDevice.feed(635);})()`);
+            await until(page, `document.querySelector('#wave-saturation').textContent === '原始饱和 0.2%'`);
+            await page.evaluate(`(() => {
+                const axis = document.querySelector('#wave-y-range');
+                axis.value = '100';
+                axis.dispatchEvent(new Event('change'));
+            })()`);
+            assert.equal(await page.evaluate(`localStorage.getItem('waveformFixedHalfRangeUv')`), '100');
+            await wait(8100);
+            assert.equal(await page.evaluate(`workflowDevice.eeg`), true);
+            await page.evaluate(`workflowDevice.feed(388)`);
             assert.equal(await page.evaluate(`document.querySelector('#metric-impedance').textContent`), '-- kΩ');
             assert.equal(await page.evaluate(`workflowDevice.eeg`), true);
             await page.evaluate(`workflowDevice.feed(1)`);
@@ -227,6 +237,9 @@ async function feedEpoch(page, mode = 'normal') {
             const raw = decodeRawRecords(fs.readFileSync(path.join(session.directory, 'raw_adc.bin')));
             assert.equal(raw.rawCodes.length, await page.evaluate(`workflowDevice.samples - workflowDevice.recordStartSamples - workflowDevice.corruptedFrames`));
             assert.equal(saved.rows, raw.rawCodes.length);
+            const events = fs.readFileSync(path.join(session.directory, 'events.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+            const gapTotal = events.filter(e => e.action === 'eeg_seq_gap').reduce((sum, e) => sum + e.gapSamples, 0);
+            assert.equal(gapTotal, 50 + await page.evaluate(`workflowDevice.corruptedFrames`));
             assert.equal(raw.elapsedMs[0], 4);
             const sentSamples = await page.evaluate(`workflowDevice.samples`);
             assert.equal(raw.rawCodes.at(-1), Math.round(1800 * Math.sin(2*Math.PI*1.2*((sentSamples-1)/250)) + 450 * Math.sin(2*Math.PI*10*((sentSamples-1)/250))));

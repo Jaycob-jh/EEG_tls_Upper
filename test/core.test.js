@@ -542,6 +542,12 @@ test('EEG rolling frame rate reports a stable 250 FPS and expires stale samples'
     const justStarted = Core.createEegStreamStats();
     Core.trackEegStreamFrame(justStarted, 1, 100);
     assert.equal(Core.eegStreamFrameRate(justStarted, 100), 0);
+
+    const burst = Core.createEegStreamStats();
+    for (let index = 0; index < 100; index++) Core.trackEegStreamFrame(burst, index, 1600 + index * 4);
+    assert.equal(Core.eegStreamFrameRate(burst, 2000), 250);
+    assert.equal(Core.eegStreamThroughput(burst, 2000), 50);
+    assert.equal(Core.eegStreamThroughput(burst, 4000), 0);
 });
 
 test('EEG CSV preserves existing columns and stores device seq as sample_index', () => {

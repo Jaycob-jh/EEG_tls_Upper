@@ -63,7 +63,8 @@
         sessionStartedAt: 0,
         edfQueue: [],
         edfFlushPromise: Promise.resolve(),
-        sessionEventPromise: Promise.resolve(),
+        pendingGapEvents: [],
+        recordingSealed: false,
         sessionFinishPromise: null,
         recordingWriteError: null,
         sampleIndex: 0,
@@ -71,6 +72,9 @@
         streamMetricsTimer: null,
         waveform: [],
         waveformMax: 250 * 60,
+        waveformSaturation: new Uint32Array(250 * 60 + 1),
+        waveformSampleCount: 0,
+        waveformFixedHalfRangeUv: Number(localStorage.getItem('waveformFixedHalfRangeUv')) || 0,
         waveformWindowSeconds: waveformDisplay.xRangeSeconds,
         waveformRefreshFps: waveformDisplay.refreshFps,
         lastEeg: null,
@@ -273,6 +277,8 @@
             eegStopping: Boolean(state.eegStopPromise),
             modelReady: state.sleepModelReady && !state.liveModelError, lastSampleAt: state.lastEegReceivedAt,
             startedAt: state.liveStartedAt || Date.now(), quality: state.liveQuality, prediction: state.livePrediction,
+            slowReception: state.liveStartedAt && Date.now() - state.liveStartedAt >= state.streamStats.windowMs
+                && Core.eegStreamThroughput(state.streamStats, performance.now()) < recordingSampleRate() * 0.9,
             protocol: state.sleepStimulusProtocol, matchedCount: gate?.matchedCount,
             lastTriggeredAt: gate?.lastTriggeredAt, activeUntil: state.manualLightChannel ? state.manualLightUntil : gate?.activeUntil,
             manualLight: Boolean(state.manualLightChannel),
@@ -622,7 +628,7 @@
 
     function updateStreamMetricsUi(nowMs = performance.now()) {
         const stats = state.streamStats;
-        const frameRate = state.eegRunning ? Core.eegStreamFrameRate(stats, nowMs) : 0;
+        const frameRate = state.eegRunning ? Core.eegStreamThroughput(stats, nowMs) : 0;
         const lossRate = Core.eegStreamLossRate(stats);
         $('metric-frame-rate').textContent = `${frameRate.toFixed(1)} FPS`;
         $('metric-gap-events').textContent = stats.gapEvents.toLocaleString();
@@ -665,7 +671,11 @@
             : `窗口 ${state.waveformWindowSeconds} 秒 · ${visiblePoints.toLocaleString()} / ${windowPoints.toLocaleString()} 点`;
         if (state.lastEeg) {
             const index = state.selectedChannel - 1;
-            $('wave-value').textContent = `${state.lastEeg.filteredMicrovolts[index].toFixed(2)} µV`;
+            const rawCode = state.lastEeg.rawCodes[index];
+            const atLimit = rawCode === -8388608 || rawCode === 8388607;
+            $('wave-value').textContent = state.eegRunning && atLimit
+                ? '原始信号达到量程边界'
+                : `${state.lastEeg.filteredMicrovolts[index].toFixed(2)} µV`;
         }
     }
 
@@ -1389,6 +1399,10 @@
                 if (frame.func !== SDK.FUNC.EEG_RAW) logProtocol('RX', Core.bytesToHex(frame.raw));
             });
             client.on('eeg', handleEegFrame);
+            client.once('listenerError', error => {
+                logProtocol('ERR', `接收处理失败：${error.message}`, 'error');
+                void audit('eeg_receive_handler_failed', { error: error.message }, 'error');
+            });
             let protocolErrors = 0;
             client.on('error', error => {
                 protocolErrors += 1;
@@ -1500,6 +1514,8 @@
         if (!state.connected) return;
         planEngine.stopRelative('ble_disconnected');
         state.connected = false;
+        cancelImpedanceMeasurement('设备连接已断开');
+        clearImpedanceMode();
         state.eegRunning = false;
         state.deviceEegRunning = false;
         state.eegStopError = null;
@@ -1643,6 +1659,8 @@
         localStorage.setItem('selectedChannel', String(channel));
         state.processor?.reset();
         state.waveform.length = 0;
+        state.waveformSampleCount = 0;
+        state.waveformSaturation[0] = 0;
         resetRealtimeSleep(true);
         state.drawDirty = true;
         updateEegUi();
@@ -1654,6 +1672,7 @@
     async function startEeg(options = {}) {
         if (state.eegRunning) return;
         if (state.impedanceBusy) throw new Error('电极检测正在结束，请稍候再开始采集');
+        if (state.impedanceMode) throw new Error('请先确认阻抗检测已停止');
         if (state.deviceEegRunning) await stopEegOnDevice();
         const channel = options.channel || state.selectedChannel;
         await applyChannel(channel, false);
@@ -1710,7 +1729,11 @@
 
     async function stopEeg(reason = 'manual') {
         if (!state.eegRunning && !state.impedanceMode && !state.activeSession) return;
-        state.cancelImpedanceWaiter?.();
+        if (state.impedanceBusy) {
+            cancelImpedanceMeasurement();
+            return;
+        }
+        const restoreChannel = state.impedanceMode ? state.selectedChannel : null;
         try { await disableSleepStimulus('EEG 已停止'); }
         catch (error) {
             logProtocol('ERR', `解除分期刺激协议：${error.message}`, 'error');
@@ -1718,7 +1741,17 @@
         }
         await stopEegOnDevice();
         state.eegRunning = false;
-        state.impedanceMode = false;
+        if (restoreChannel != null) {
+            state.impedanceBusy = true;
+            try {
+                await restoreAfterImpedance(restoreChannel, requireClient());
+                $('metric-impedance-state').textContent = '采集已停止，可以重新检测';
+            } finally {
+                state.impedanceBusy = false;
+                state.impedanceCancellation = null;
+                updateEegUi();
+            }
+        }
         updateEegUi();
         renderNextAction();
         addActivity('脑电采集已停止');
@@ -1726,12 +1759,34 @@
         if (state.activeSession) await finishSession('completed', reason);
     }
 
+    function cancelImpedanceMeasurement(message = '电极检测已取消') {
+        if (!state.impedanceBusy) return;
+        state.impedanceCancellation = new Error(message);
+        state.cancelImpedanceWaiter?.(state.impedanceCancellation);
+    }
+
+    function clearImpedanceMode() {
+        state.impedanceMode = false;
+        if (state.processor?.impedance) {
+            state.processor.impedance = null;
+            state.processor.reset();
+        }
+    }
+
+    async function restoreAfterImpedance(channel, client) {
+        clearImpedanceMode();
+        await new Promise(resolve => setTimeout(resolve, 150));
+        if (state.connected !== false && requireClient() === client) await applyChannel(channel, false);
+    }
+
     async function measureImpedance(channel = state.selectedChannel) {
         if (state.eegRunning) throw new Error('阻抗检测前必须停止普通 EEG');
         if (state.impedanceBusy) throw new Error('电极检测正在进行，请稍候');
+        if (state.impedanceMode || state.eegStopPromise || state.eegStopError) throw new Error('请先确认采集已停止');
         const client = requireClient();
         state.impedanceBusy = true;
         state.impedanceMode = true;
+        state.impedanceCancellation = null;
         renderNextAction();
         $('impedance-button').disabled = true;
         $('metric-impedance').textContent = '-- kΩ';
@@ -1751,24 +1806,41 @@
                 throw new Error(`阻抗配置回读不一致: 0x${first.address.toString(16).padStart(2, '0')} expected=0x${first.expected.toString(16).padStart(2, '0')} actual=0x${first.actual.toString(16).padStart(2, '0')}`);
             }
             await audit('impedance_config_verified', { channel, registersHex: Core.bytesToHex(registerReadback.values) });
+            if (state.impedanceCancellation) throw state.impedanceCancellation;
             state.processor.reset();
             state.processor.impedance = new SDK.impedance.ImpedanceEstimator({ channelCount: 8, preset: 'brainlume-24na-v1' });
-            await client.startEeg();
-            const value = await new Promise((resolve, reject) => {
-                const timer = setTimeout(() => {
+            const measurement = new Promise((resolve, reject) => {
+                const initialWaitMs = 8000;
+                const extensionMs = 2000;
+                const maxWaitMs = 32000;
+                let waitedMs = initialWaitMs;
+                let previousCleanCount = 0;
+                let timer;
+                const checkProgress = () => {
+                    const d = state.impedanceDiagnostics;
+                    const cleanCount = d.received - d.saturated;
+                    if (d.received < 1024 && cleanCount > previousCleanCount && waitedMs < maxWaitMs) {
+                        previousCleanCount = cleanCount;
+                        waitedMs += extensionMs;
+                        timer = setTimeout(checkProgress, extensionMs);
+                        return;
+                    }
+                    d.waitedMs = waitedMs;
                     state.impedanceWaiter = null;
                     state.cancelImpedanceWaiter = null;
-                    const d = state.impedanceDiagnostics;
                     const message = d && d.received >= 1024
                         ? d.saturated >= d.received * 0.99 ? '阻抗信号超出设备量程，请检查电极、参考与接线'
                             : d.longestCleanRun < 1024 ? '未收到连续且未超量程的阻抗数据，请检查电极与连接'
                                 : '已收到阻抗数据，但未得到有效测量值，请检查电极与连接'
-                        : `阻抗数据不足（${d?.received || 0}/1024 点），请检查设备连接`;
+                        : `阻抗数据不足（收到 ${d.received}/1024 点），请检查设备连接`;
                     reject(new Error(message));
-                }, 8000);
-                state.cancelImpedanceWaiter = () => {
-                    clearTimeout(timer);state.impedanceWaiter=null;state.cancelImpedanceWaiter=null;
-                    reject(new Error('电极检测已取消'));
+                };
+                timer = setTimeout(checkProgress, initialWaitMs);
+                state.cancelImpedanceWaiter = error => {
+                    clearTimeout(timer);
+                    state.impedanceWaiter = null;
+                    state.cancelImpedanceWaiter = null;
+                    reject(error);
                 };
                 state.impedanceWaiter = impedanceValues => {
                     const kohm = impedanceValues[channel - 1];
@@ -1779,6 +1851,11 @@
                     resolve(kohm);
                 };
             });
+            // Notifications can arrive before the start acknowledgement.
+            measurement.catch(() => {});
+            await client.startEeg();
+            if (state.impedanceCancellation) throw state.impedanceCancellation;
+            const value = await measurement;
             $('metric-impedance').textContent = `${value.toFixed(2)} kΩ`;
             $('metric-impedance-state').textContent = `CH${channel} · 已校准预设`;
             addActivity(`CH${channel} 阻抗 ${value.toFixed(2)} kΩ`);
@@ -1802,13 +1879,13 @@
             await audit('impedance_measure_failed', { channel, error: error.message, diagnostics }, 'error');
             throw error;
         } finally {
+            state.cancelImpedanceWaiter?.(measurementError);
             try {
-                await stopEegOnDevice();
-                state.eegRunning = false;
-                state.impedanceMode = false;
-                if (state.processor) { state.processor.impedance = null; state.processor.reset(); }
-                await new Promise(resolve => setTimeout(resolve, 150));
-                await applyChannel(channel, false);
+                if (state.connected !== false && state.impedanceMode) {
+                    await stopEegOnDevice();
+                    state.eegRunning = false;
+                    await restoreAfterImpedance(channel, client);
+                }
             } catch (error) {
                 const stopped = !state.impedanceMode;
                 const message = stopped ? '采集已停止，但恢复脑电配置失败；开始采集时将重新配置' : '停止尚未确认，请先重试停止';
@@ -1816,7 +1893,13 @@
                 logProtocol('ERR', error.message, 'error');
                 await audit('impedance_cleanup_failed', { channel, stopped, error: error.message }, 'error');
                 throw measurementError ? new Error(`${measurementError.message}；${message}：${error.message}`) : error;
-            } finally { state.impedanceBusy = false; state.impedanceDiagnostics = null; state.cancelImpedanceWaiter = null; updateEegUi(); renderNextAction(); }
+            } finally {
+                state.impedanceBusy = false;
+                state.impedanceDiagnostics = null;
+                state.impedanceCancellation = null;
+                updateEegUi();
+                renderNextAction();
+            }
         }
     }
 
@@ -1934,6 +2017,7 @@
     }
 
     async function startLight(channel, context = {}) {
+        if (state.deviceDiagnosticRunning) throw new Error('采集诊断期间禁止开启光照');
         if (channel === 3) {
             for (const output of [1, 2]) await startLight(output, context);
             return;
@@ -1969,7 +2053,7 @@
     }
 
     async function performSafeStop(reason = 'manual') {
-        state.cancelImpedanceWaiter?.();
+        cancelImpedanceMeasurement();
         clearManualLightTracking();
         planEngine.stopRelative(reason);
         await disableSleepStimulus(reason, false);
@@ -1990,7 +2074,9 @@
         try {
             await stopEegOnDevice();
             state.eegRunning = false;
-            state.impedanceMode = false;
+            if (state.impedanceMode && !state.impedanceBusy) {
+                await restoreAfterImpedance(state.selectedChannel, requireClient());
+            }
             if (state.activeSession) await finishSession('interrupted', reason);
         } catch (error) {
             failures.push({ operation: 'eeg_stop_or_save', error: error.message });
@@ -2018,7 +2104,8 @@
         state.streamStats = Core.createEegStreamStats();
         state.edfQueue.length = 0;
         state.edfFlushPromise = Promise.resolve();
-        state.sessionEventPromise = Promise.resolve();
+        state.pendingGapEvents.length = 0;
+        state.recordingSealed = false;
         state.sessionFinishPromise = null;
         state.recordingWriteError = null;
         state.sessionStartedAt = performance.now();
@@ -2046,12 +2133,34 @@
             ? (currentSeq - previousSeq + 65536) % 65536 : 0;
         const estimatedSeqGap = delta > 0 && delta < 32768 ? delta - 1 : 0;
         state.lastEeg = result;
+        const recording = state.activeSession && !state.impedanceMode && !state.recordingSealed;
         let streamFrame = null;
-        if (state.activeSession && !state.impedanceMode) {
+        if (recording) {
             streamFrame = Core.trackEegStreamFrame(state.streamStats, result.seq, performance.now());
         }
         const seqGap = streamFrame?.seqGap ?? estimatedSeqGap;
         const rawCode = result.rawCodes[channelIndex];
+        if (recording) {
+            if (state.sampleIndex < 3 && frame?.raw) {
+                const snapshot = {
+                    level: 'info', action: 'eeg_startup_frame', sessionId: state.activeSession.id,
+                    channel: state.selectedChannel, seq: result.seq, rawCode,
+                    frameHex: Core.bytesToHex(frame.raw),
+                };
+                void window.desktopAPI.appendAppEvent(snapshot).catch(error => {
+                    logProtocol('ERR', `启动帧诊断保存失败：${error.message}`, 'error');
+                });
+            }
+            state.edfQueue.push({ rawCode, seq: result.seq, elapsedMs: Math.max(0, performance.now() - state.sessionStartedAt) });
+            if (seqGap > 0) {
+                state.pendingGapEvents.push({
+                    ts: Core.formatLocalIso(), level: 'info', action: 'eeg_seq_gap',
+                    seq: result.seq, gapSamples: seqGap,
+                });
+            }
+            state.sampleIndex++;
+            if (state.edfQueue.length >= 512) flushEdfQueue();
+        }
         const modelFilterCode = state.sleepModelFilter?.supported
             ? state.sleepModelFilter.process(channelIndex, rawCode)
             : result.filteredCodes[channelIndex];
@@ -2060,22 +2169,15 @@
             gain: state.processor?.options?.gains?.[channelIndex] || 24,
         });
         state.waveform.push(result.filteredMicrovolts[channelIndex]);
+        // Keep cumulative counts for one full display window, so redraws need no sample scan.
+        const saturationHistory = state.waveformSaturation;
+        const previousSaturation = saturationHistory[state.waveformSampleCount % saturationHistory.length];
+        state.waveformSampleCount++;
+        saturationHistory[state.waveformSampleCount % saturationHistory.length] =
+            previousSaturation + Number(Math.abs(rawCode) >= 0.99 * 8388607);
         if (state.eegRunning && !state.impedanceMode) handleRealtimeSleepSample(modelFilteredMicrovolts, { seqGap, rawCode });
         if (state.waveform.length > state.waveformMax) state.waveform.splice(0, state.waveform.length - state.waveformMax);
         state.drawDirty = true;
-        if (state.activeSession && !state.impedanceMode) {
-            state.edfQueue.push({ rawCode, seq: result.seq, elapsedMs: Math.max(0, performance.now() - state.sessionStartedAt) });
-            if (seqGap > 0) {
-                const sessionId = state.activeSession.id;
-                state.sessionEventPromise = state.sessionEventPromise
-                    .then(() => window.desktopAPI.appendSessionEvent(sessionId, {
-                        action: 'eeg_seq_gap', seq: result.seq, gapSamples: seqGap,
-                    }))
-                    .catch(error => logProtocol('ERR', `记录 EEG 序列缺口失败：${error.message}`, 'error'));
-            }
-            state.sampleIndex++;
-            if (state.edfQueue.length >= 512) flushEdfQueue();
-        }
         if (state.impedanceMode && state.impedanceDiagnostics) {
             const d = state.impedanceDiagnostics;
             d.received++;
@@ -2099,8 +2201,9 @@
         if (!state.activeSession || state.edfQueue.length === 0) return state.edfFlushPromise;
         const sessionId = state.activeSession.id;
         const samples = state.edfQueue.splice(0);
+        const gapEvents = state.pendingGapEvents.splice(0);
         state.edfFlushPromise = state.edfFlushPromise
-            .then(() => state.recordingWriteError ? undefined : window.desktopAPI.appendSessionSamples(sessionId, samples))
+            .then(() => state.recordingWriteError ? undefined : window.desktopAPI.appendSessionSamples(sessionId, samples, gapEvents))
             .catch(error => {
                 state.recordingWriteError = error;
                 logProtocol('ERR', `EDF 写入失败：${error.message}`, 'error');
@@ -2118,10 +2221,10 @@
         if (state.sessionFinishPromise) return state.sessionFinishPromise;
         if (!state.activeSession) return;
         const session = state.activeSession;
+        state.recordingSealed = true;
         state.sessionFinishPromise = (async () => {
             await flushEdfQueue();
             await state.edfFlushPromise;
-            await state.sessionEventPromise;
             const result = await window.desktopAPI.stopSession(session.id,
                 state.recordingWriteError ? 'failed' : status,
                 state.recordingWriteError ? 'edf_write_failed' : reason);
@@ -2633,6 +2736,13 @@
             state.drawDirty = true;
             updateEegUi();
         });
+        const yRange = $('wave-y-range');
+        yRange.value = String(state.waveformFixedHalfRangeUv);
+        yRange.addEventListener('change', () => {
+            state.waveformFixedHalfRangeUv = Number(yRange.value);
+            localStorage.setItem('waveformFixedHalfRangeUv', yRange.value);
+            state.drawDirty = true;
+        });
         $('wave-refresh-rate').addEventListener('change', event => {
             const display = Core.normalizeWaveformDisplay({
                 xRangeSeconds: state.waveformWindowSeconds,
@@ -2918,6 +3028,8 @@
     }
 
     function startWaveformLoop() {
+        const peakToPeak = $('wave-peak-to-peak');
+        const saturation = $('wave-saturation');
         const streams = [
             { canvas: $('eeg-canvas'), values: () => state.waveform.slice(-waveformWindowPoints()), color: '#111111' },
         ];
@@ -2944,7 +3056,16 @@
             const values = stream.values();
             const plotX = 58, plotY = 18, plotW = Math.max(1, width - 74), plotH = Math.max(1, height - 52);
             const plotBottom = plotY + plotH;
-            const scale = Core.waveformScale(values);
+            const scale = Core.waveformScale(values, {
+                minimumSpanUv: 20, fixedHalfRangeUv: state.waveformFixedHalfRangeUv,
+            });
+            const history = state.waveformSaturation;
+            const count = state.waveformSampleCount;
+            const saturated = (history[count % history.length] - history[(count - values.length) % history.length]) >>> 0;
+            const saturationLabel = values.length ? `原始饱和 ${(100 * saturated / values.length).toFixed(1)}%` : '原始饱和 --';
+            if (saturation.textContent !== saturationLabel) saturation.textContent = saturationLabel;
+            const peakLabel = scale.peakToPeakUv == null ? '峰峰值 --' : `峰峰值 ${scale.peakToPeakUv.toFixed(2)} µV`;
+            if (peakToPeak.textContent !== peakLabel) peakToPeak.textContent = peakLabel;
             const live = Boolean(state.activeSession);
             const visibleSeconds = Math.min(state.waveformWindowSeconds, Core.sampleCountToSeconds(values.length, 250));
             const elapsedSeconds = currentRecordingDurationSeconds();
@@ -3015,7 +3136,7 @@
             context.textAlign = 'left';
             if (scale.clipped) {
                 context.fillStyle = '#9a6a12';
-                context.fillText('极端瞬态已压缩', Math.max(plotX, width - 112), plotY + 12);
+                context.fillText(state.waveformFixedHalfRangeUv ? '波形超出显示刻度' : '极端瞬态已压缩', Math.max(plotX, width - 112), plotY + 12);
             }
         }
         function draw(timestamp) {
@@ -3030,56 +3151,94 @@
         requestAnimationFrame(draw);
     }
 
-    async function runDeviceDiagnostic() {
-        const report = { startedAt: Core.formatLocalIso(), appVersion: '0.6.1', sdkVersion: SDK.VERSION, success: false };
+    async function runDeviceDiagnostic(durationSeconds = 60) {
+        state.deviceDiagnosticRunning = true;
+        const report = { startedAt: Core.formatLocalIso(), appVersion: '0.6.1', sdkVersion: SDK.VERSION, durationSeconds, success: false };
+        let startedEeg = false;
+        const unsubscribe = [];
         try {
             if (!await connectBle()) throw new Error('BLE connection failed');
+            const client = requireClient();
+            const transport = state.transport;
             report.device = {
-                name: state.transport.name, id: state.transport.id,
+                name: transport.name,
                 protocolVersion: state.deviceInfo?.protocolVersion,
-                deviceIdHex: state.deviceInfo?.deviceId ? Core.bytesToHex(state.deviceInfo.deviceId) : null,
-                actionCount: state.deviceInfo?.actionCount,
-                actions: state.deviceInfo?.actions,
-                compatibilityMode: state.deviceInfo?.compatibilityMode,
                 capabilityDiscoveryComplete: state.deviceInfo?.capabilityDiscoveryComplete,
                 capabilityWarnings: state.deviceInfo?.capabilityWarnings,
             };
-            if (state.deviceInfo?.capabilityDiscoveryComplete && state.deviceInfo?.actionCount !== 9) {
-                throw new Error(`Expected 9 actions, got ${state.deviceInfo?.actionCount}`);
-            }
             report.statusBefore = await queryStatus();
-
-            const expected = buildEegConfig(2, false);
-            const configResult = await configureEegVerified(2, false);
-            const readback = { values: configResult.readback };
-            const mismatches = SDK.ads1299.compareAdsConfig(expected, readback.values);
-            report.eegConfig = {
-                expectedHex: Core.bytesToHex(expected),
-                readbackHex: Core.bytesToHex(readback.values),
-                mismatches,
-            };
-            if (mismatches.length) throw new Error(`ADS1299 readback mismatch at 0x${mismatches[0].address.toString(16).padStart(2, '0')}`);
-
+            if (report.statusBefore.eegRunning || report.statusBefore.light1Running || report.statusBefore.light2Running) {
+                throw new Error('设备正在采集或光照，请停止后再诊断');
+            }
+            // Capture both sides of the host parser, without recording notification payloads.
+            const incoming = { notifications: 0, bytes: 0, notificationSizes: {}, validFrames: 0,
+                validEegFrames: 0, decodedEegFrames: 0, errors: {}, listenerErrors: 0 };
+            unsubscribe.push(transport.onData(bytes => {
+                incoming.notifications++;
+                incoming.bytes += bytes.length;
+                incoming.notificationSizes[bytes.length] = (incoming.notificationSizes[bytes.length] || 0) + 1;
+            }));
+            unsubscribe.push(client.on('frame', frame => {
+                incoming.validFrames++;
+                if (frame.func === SDK.FUNC.EEG_RAW) incoming.validEegFrames++;
+            }));
+            unsubscribe.push(client.on('eeg', () => { incoming.decodedEegFrames++; }));
+            unsubscribe.push(client.on('error', error => { incoming.errors[error.name] = (incoming.errors[error.name] || 0) + 1; }));
+            unsubscribe.push(client.on('listenerError', () => { incoming.listenerErrors++; }));
+            startedEeg = true;
             await startEeg({ channel: 2 });
+            const session = state.activeSession;
             const sampleStart = state.streamStats.receivedFrames;
-            const sampleStartedAt = performance.now();
-            await new Promise(resolve => setTimeout(resolve, 3000));
-            await stopEeg('device_diagnostic');
-            const elapsedSeconds = (performance.now() - sampleStartedAt) / 1000;
+            const gapStart = state.streamStats.lostFrames;
+            const eventStart = state.streamStats.gapEvents;
+            const start = performance.now();
+            const intervals = [];
+            const intervalCount = durationSeconds / 5;
+            let lastTime = start, lastSamples = sampleStart, lastGaps = gapStart;
+            for (let interval = 0; interval < intervalCount; interval++) {
+                await delay(5000);
+                if (!state.connected || state.activeSession !== session || !state.eegRunning) break;
+                const now = performance.now();
+                const samples = state.streamStats.receivedFrames;
+                const gaps = state.streamStats.lostFrames;
+                intervals.push({ seconds: (now - lastTime) / 1000, samples: samples - lastSamples, seqGaps: gaps - lastGaps });
+                lastTime = now;
+                lastSamples = samples;
+                lastGaps = gaps;
+                $('header-status').textContent = `无光照采集测试 · ${Math.min((interval + 1) * 5, durationSeconds)} / ${durationSeconds} 秒`;
+            }
+            const elapsedSeconds = (performance.now() - start) / 1000;
             const samples = state.streamStats.receivedFrames - sampleStart;
+            const seqGaps = state.streamStats.lostFrames - gapStart;
             report.eegStream = {
                 elapsedSeconds, samples, samplesPerSecond: samples / elapsedSeconds,
-                seqGaps: state.streamStats.lostFrames, gapEvents: state.streamStats.gapEvents,
-                lossRate: Core.eegStreamLossRate(state.streamStats),
+                seqGaps, gapEvents: state.streamStats.gapEvents - eventStart,
+                lossRate: samples + seqGaps ? seqGaps / (samples + seqGaps) : null,
+                intervals, incoming: structuredClone(incoming),
             };
-            if (samples < 500) throw new Error(`EEG stream too slow: ${samples} samples in ${elapsedSeconds.toFixed(2)}s`);
+            if (!state.connected || state.activeSession !== session || !state.eegRunning) throw new Error('采集中断，已保留诊断数据');
+            await stopEeg('device_diagnostic');
+            startedEeg = false;
+            const saved = (await window.desktopAPI.listSessions()).find(entry => entry.id === session.id);
+            report.recording = { rows: saved?.rows, status: saved?.status, receivedFrames: state.streamStats.receivedFrames };
             report.statusAfter = await queryStatus();
-            report.success = true;
+            const registerReadback = await client.readAds1299Registers();
+            report.config1 = registerReadback.values[0x01];
+            report.nominalRate = SDK.ads1299.sampleRateFromConfig1(report.config1);
+            // Operational diagnostic only. Inspect every interval as well as the aggregate.
+            report.success = report.nominalRate === 250 && report.eegStream.samplesPerSecond >= 245
+                && seqGaps === 0 && intervals.length === intervalCount && intervals.every(row => row.samples / row.seconds >= 225)
+                && report.recording.status === 'completed' && report.recording.rows === report.recording.receivedFrames
+                && !report.statusAfter.eegRunning && !report.statusAfter.light1Running && !report.statusAfter.light2Running;
         } catch (error) {
             report.error = { name: error.name, message: error.message, ...protocolErrorContext(error) };
         } finally {
-            try { await safeStop('device_diagnostic_complete'); } catch (error) {
-                report.safeStopError = { name: error.name, message: error.message, ...protocolErrorContext(error) };
+            for (const off of unsubscribe) off();
+            if (startedEeg && state.connected) {
+                try {
+                    if (state.eegRunning || state.activeSession) await stopEeg('device_diagnostic_cleanup');
+                    else await stopEegOnDevice();
+                } catch (error) { report.stopError = { name: error.name, message: error.message }; }
             }
             report.finishedAt = Core.formatLocalIso();
             await window.desktopAPI.completeDiagnostic(report);
@@ -3143,9 +3302,12 @@
             if (state.activeSession) updateEegUi();
         }, 500);
         await audit('app_started', { version: '0.6.1', sdkVersion: SDK.VERSION });
-        if (window.desktopAPI.getLaunchMode() === 'device-diagnostic') {
-            $('header-status').textContent = 'PRESS ANY KEY TO DIAGNOSE';
-            window.addEventListener('keydown', () => runDeviceDiagnostic(), { once: true });
+        const launchMode = window.desktopAPI.getLaunchMode();
+        if (launchMode === 'device-diagnostic' || launchMode === 'device-diagnostic-long') {
+            const durationSeconds = launchMode === 'device-diagnostic-long' ? 1800 : 60;
+            state.deviceDiagnosticRunning = true;
+            $('header-status').textContent = `按任意键开始无光照采集测试 · ${durationSeconds} 秒`;
+            window.addEventListener('keydown', () => runDeviceDiagnostic(durationSeconds), { once: true });
         }
     }
 
