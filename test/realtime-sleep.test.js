@@ -213,6 +213,21 @@ test('sleep-stage stimulus protocol validates only thresholds used by the select
     assert.deepEqual(probabilityN3, []);
 });
 
+test('N2 and REM selected together require consecutive epochs of the same selected stage', () => {
+    const gate=new Sleep.SleepStageStimulusGate({enabled:true,targetStages:['N2','REM'],consecutiveEpochs:2,minConfidence:0.8});
+    const epoch=(epochIndex,stage)=>({epochIndex,stage,confidence:0.95,quality:{ok:true}});
+    assert.equal(gate.evaluate(epoch(0,'N2'),1000).triggered,false);
+    assert.equal(gate.evaluate(epoch(1,'REM'),2000).matchedCount,1);
+    assert.equal(gate.evaluate(epoch(2,'N2'),3000).matchedCount,1);
+    const result=gate.evaluate(epoch(3,'N2'),4000);
+    assert.equal(result.triggered,true);assert.equal(result.stage,'N2');
+    const rem=new Sleep.SleepStageStimulusGate({enabled:true,targetStages:['REM'],consecutiveEpochs:2,minConfidence:0.8});
+    assert.equal(rem.evaluate(epoch(0,'N3'),1000).reason,'stage_not_selected');
+    assert.equal(rem.evaluate(epoch(1,'REM'),2000).triggered,false);
+    assert.equal(rem.evaluate(epoch(2,'REM'),3000).triggered,true);
+    assert.deepEqual(Sleep.normalizeStimulusProtocol({}).targetStages,['N3']);
+});
+
 test('sleep-stage stimulus gate triggers only after consecutive valid target epochs', () => {
     const gate = new Sleep.SleepStageStimulusGate({
         enabled: true,

@@ -15,9 +15,12 @@ test('recording start, batched append and stop save the exact raw stream alongsi
     try {
         const source=fs.readFileSync(path.join(__dirname,'../main.js'),'utf8');
         const code=source.slice(source.indexOf('async function startRecording('),source.indexOf('async function listSessions('));
+        const powerCalls = [];
         const context=vm.createContext({
             fs,fsp:fs.promises,path,Buffer,crypto:require('node:crypto'),EdfWriter,encodeRawRecords,
-            activeRecordings:new Map(),ensureDataDirectories:async()=>({sessions:root}),
+            activeRecordings:new Map(), recordingPowerBlocker: null,
+            powerSaveBlocker: { start: mode => { powerCalls.push(mode); return 0; }, stop: id => powerCalls.push(id) },
+            ensureDataDirectories:async()=>({sessions:root}),
             localFileStamp:()=> 'fixture',safeFilePart:x=>x,nowIso:()=>new Date().toISOString(),
             writeJsonAtomic:(p,v)=>fs.promises.writeFile(p,JSON.stringify(v)),
             prepareAutomaticGithubUpload:async()=>({status:'not_applicable'}),
@@ -26,8 +29,15 @@ test('recording start, batched append and stop save the exact raw stream alongsi
         const session=await context.startRecording({id:'raw-roundtrip',rawStorageVersion:1,sampleRateHz:250});
         const rows=Array.from({length:255},(_,i)=>({rawCode:i-128,seq:i,elapsedMs:i*4+.25}));
         await context.appendRecordingSamples(session.id,rows.slice(0,128));
-        await context.appendRecordingSamples(session.id,rows.slice(128));
-        await context.stopRecording(session.id);
+        const gaps = [{ action: 'eeg_seq_gap', seq: 128, gapSamples: 1 }, { action: 'eeg_seq_gap', seq: 129, gapSamples: 2 }];
+        await context.appendRecordingSamples(session.id,rows.slice(128),gaps);
+        const stopping = context.stopRecording(session.id);
+        await assert.rejects(context.appendRecordingSamples(session.id, rows.slice(0, 1)), /not accepting samples/);
+        await stopping;
+        assert.deepEqual(powerCalls, ['prevent-app-suspension', 0]);
+        const events = (await fs.promises.readFile(path.join(session.directory, 'events.jsonl'), 'utf8'))
+            .trim().split('\n').map(line => JSON.parse(line));
+        assert.deepEqual(events.filter(e => e.action === 'eeg_seq_gap'), gaps.map(e => ({ ...e, sessionId: session.id })));
         const metadata=JSON.parse(await fs.promises.readFile(path.join(session.directory,'session.json')));
         const raw=decodeRawRecords(await fs.promises.readFile(path.join(session.directory,metadata.rawDataFile)));
         assert.equal(metadata.rows,255);

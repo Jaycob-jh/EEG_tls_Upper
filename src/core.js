@@ -143,8 +143,23 @@
     // A lead settling transient should not flatten the rest of the live EEG view;
     // this changes only the plot bounds, never the samples written to EDF.
     function waveformScale(values, options = {}) {
+        const fixedHalfRange = Number(options.fixedHalfRangeUv);
+        if (Number.isFinite(fixedHalfRange) && fixedHalfRange > 0) {
+            let low = Infinity, high = -Infinity, count = 0;
+            for (const value of values || []) {
+                if (!Number.isFinite(value)) continue;
+                low = Math.min(low, value);
+                high = Math.max(high, value);
+                count++;
+            }
+            return {
+                min: -fixedHalfRange, max: fixedHalfRange, center: 0,
+                clipped: low < -fixedHalfRange || high > fixedHalfRange,
+                peakToPeakUv: count >= 2 ? high - low : null,
+            };
+        }
         const finiteValues = Array.from(values || [], Number).filter(Number.isFinite).sort((a, b) => a - b);
-        if (!finiteValues.length) return { min: -50, max: 50, center: 0, clipped: false };
+        if (!finiteValues.length) return { min: -50, max: 50, center: 0, clipped: false, peakToPeakUv: null };
         const minimumSpanUv = Math.max(1, Number(options.minimumSpanUv) || 100);
         const center = percentile(finiteValues, .5);
         const lower = percentile(finiteValues, finiteValues.length < 20 ? 0 : .02);
@@ -156,6 +171,7 @@
         return {
             min, max, center,
             clipped: finiteValues[0] < min || finiteValues.at(-1) > max,
+            peakToPeakUv: finiteValues.length >= 2 ? finiteValues.at(-1) - finiteValues[0] : null,
         };
     }
 
@@ -555,6 +571,11 @@
         return elapsedMs > 0 ? (times.length - 1) * 1000 / elapsedMs : 0;
     }
 
+    function eegStreamThroughput(stats, nowMs) {
+        pruneEegFrameTimes(stats, nowMs);
+        return stats.recentFrameTimes.length * 1000 / stats.windowMs;
+    }
+
     function eegStreamLossRate(stats) {
         const received = Math.max(0, Number(stats?.receivedFrames) || 0);
         const lost = Math.max(0, Number(stats?.lostFrames) || 0);
@@ -577,7 +598,7 @@
         WAVEFORM_X_RANGES_SECONDS, WAVEFORM_REFRESH_RATES_FPS, normalizeWaveformDisplay,
         formatDuration, sampleCountToSeconds, waveformScale, deviceOperationPresentation,
         FIXED_PLAN_EEG_CHANNEL, FIXED_PLAN_LIGHT_CHANNEL, normalizePlan,
-        EEG_CSV_COLUMNS, eegCsvLine, createEegStreamStats, trackEegStreamFrame, eegStreamFrameRate, eegStreamLossRate,
+        EEG_CSV_COLUMNS, eegCsvLine, createEegStreamStats, trackEegStreamFrame, eegStreamFrameRate, eegStreamThroughput, eegStreamLossRate,
         parseTimeOfDay, formatLocalIso, validatePlan, PlanEngine, csvEscape, bytesToHex, makeId,
     });
 }));

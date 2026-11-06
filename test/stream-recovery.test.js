@@ -51,3 +51,24 @@ test('a sequence gap spanning epochs stays invalid in every affected epoch', () 
     assert.equal(second.quality.ok, false);
     assert.equal(p.onlineInferenceInput(), null);
 });
+
+test('truncated EEG frames at observed offsets do not consume the next valid frame', () => {
+    const buildEeg = sequence => {
+        const payload = new Uint8Array(29);
+        payload[1] = sequence;
+        payload[2] = 0xc0;
+        return SDK.protocol.buildFrame(1, 0x22, 1, payload);
+    };
+    const previous = buildEeg(10);
+    const next = buildEeg(11);
+    for (const offset of [25, 31]) {
+        const bytes = Uint8Array.from([...previous.slice(0, offset), ...next]);
+        for (let split = 1; split < bytes.length; split++) {
+            const errors = [];
+            const parser = new SDK.protocol.ActionBusParser({ onError: error => errors.push(error) });
+            const frames = [...parser.feed(bytes.slice(0, split)), ...parser.feed(bytes.slice(split))];
+            assert.deepEqual(frames.map(frame => frame.raw), [next]);
+            assert.ok(errors.some(error => error.name === 'CrcError'));
+        }
+    }
+});

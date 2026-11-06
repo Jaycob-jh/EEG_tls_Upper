@@ -10,7 +10,7 @@ contextBridge.exposeInMainWorld('desktopAPI', {
     loadPlans: () => ipcRenderer.invoke('plans:load'),
     savePlans: plans => ipcRenderer.invoke('plans:save', plans),
     startSession: metadata => ipcRenderer.invoke('session:start', metadata),
-    appendSessionSamples: (id, samples) => ipcRenderer.invoke('session:append-samples', id, samples),
+    appendSessionSamples: (id, samples, gapEvents) => ipcRenderer.invoke('session:append-samples', id, samples, gapEvents),
     appendSessionEvent: (id, record) => ipcRenderer.invoke('session:event', id, record),
     stopSession: (id, status, reason) => ipcRenderer.invoke('session:stop', id, status, reason),
     listSessions: () => ipcRenderer.invoke('sessions:list'),
