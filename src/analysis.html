@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>曹操 · 记录分析</title>
     <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="anysleep.css">
+    <link rel="stylesheet" href="n3-research-review.css">
 </head>
 <body class="analysis-window-body">
     <main class="analysis-window-content">
@@ -25,6 +27,139 @@
 
         <div class="analysis-progress" id="analysis-progress" hidden role="progressbar" aria-label="分析进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="analysis-progress-label">准备分析…</span><div><i id="analysis-progress-bar"></i></div></div>
         <div class="notice analysis-disclaimer">模型估计，仅供研究参考，不能用于诊断。</div>
+
+        <details class="analysis-section anysleep-section" id="analysis-anysleep">
+            <summary>AnySleep · 原流程与 0.3 Hz 去漂移对照（30 秒）</summary>
+            <div class="section-heading compact">
+                <div><h3>同一条 CH2 的四条分期轨迹</h3><small class="analysis-section-note">AnySleep 两版使用同一权重。去漂移版先做 0.3 Hz 双向高通，再按本条记录重新限幅和缩放。仅用于离线对照。</small></div>
+                <div class="button-row">
+                    <button class="button secondary" type="button" id="anysleep-current">对照当前记录</button>
+                    <button class="button secondary" type="button" id="anysleep-edf">打开 EDF 对照…</button>
+                </div>
+            </div>
+            <div class="analysis-yasa-summary" id="anysleep-status" role="status">请选择已结束的 250 Hz 单导 CH2 记录，或打开一个独立 EDF。</div>
+            <div id="anysleep-result" hidden>
+                <div class="analysis-yasa-summary" id="anysleep-summary"></div>
+                <p class="analysis-section-note anysleep-detail" id="anysleep-scales"></p>
+                <div class="anysleep-controls">
+                    <label for="anysleep-n3-mode">N3 分歧基于</label>
+                    <select id="anysleep-n3-mode">
+                        <option value="detrended">AnySleep 0.3 Hz 去漂移 vs YASA、曹操</option>
+                        <option value="original">AnySleep 原流程 vs YASA、曹操</option>
+                    </select>
+                </div>
+                <p class="analysis-section-note anysleep-detail" id="anysleep-n3-summary" aria-live="polite"></p>
+                <div class="anysleep-legend" id="anysleep-legend" aria-label="分期图例"></div>
+                <canvas id="anysleep-timeline" class="anysleep-timeline" role="img" aria-label="AnySleep 原流程、去漂移版、YASA 和曹操中心回放的 30 秒分期时间轴"></canvas>
+                <div class="analysis-table-wrap anysleep-intervals"><table class="analysis-table">
+                    <thead><tr><th>分歧起点</th><th>分歧终点</th><th>时长</th><th>判为 N3 的模型</th></tr></thead>
+                    <tbody id="anysleep-intervals"></tbody>
+                </table></div>
+                <p class="analysis-section-note" id="anysleep-files"></p>
+                <details class="n3-mvp" id="n3-mvp-panel" open>
+                    <summary>自动 N3 候选 · 当前记录</summary>
+                    <p class="analysis-section-note anysleep-detail">候选要求信号质量通过且没有漂移或限幅提醒、每 30 秒有至少 6 秒高幅慢波候选（0.5–2 Hz，峰峰值 ≥75 µV），且去漂移版 AnySleep 与 YASA 或曹操中心回放同判 N3。双极 CH2 上尚未用 PSG 验证，结果不用于触发。</p>
+                    <p class="analysis-section-note anysleep-detail" id="n3-mvp-summary" role="status"></p>
+                    <div class="anysleep-controls" id="n3-mvp-controls">
+                        <label for="n3-mvp-filter">显示片段</label>
+                        <select id="n3-mvp-filter">
+                            <option value="candidate" selected>仅自动 N3 候选</option>
+                            <option value="flagged">查看原始候选和待复核</option>
+                            <option value="review">仅待复核</option>
+                            <option value="slow_review">待复核且高幅慢波 ≥6 秒</option>
+                            <option value="insufficient">质量或上下文不足</option>
+                            <option value="all">全部片段</option>
+                        </select>
+                    </div>
+                    <div class="analysis-table-wrap anysleep-intervals" id="n3-mvp-table"><table class="analysis-table">
+                        <thead><tr><th>EDF 起点相对时间</th><th>复核结论</th><th>去漂移 / YASA / 曹操</th><th>高幅慢波（秒）</th><th>依据</th></tr></thead>
+                        <tbody id="n3-mvp-rows"></tbody>
+                    </table></div>
+                    <p class="analysis-section-note anysleep-detail" id="n3-mvp-files"></p>
+                </details>
+            </div>
+        </details>
+
+        <details class="analysis-section research-review" id="n3-research-review">
+            <summary>N3 研究复核 · 预标注、待复核与人工标注</summary>
+            <p class="analysis-section-note research-intro">研究性预标注、待复核排序和人工标注均独立于自动候选。人工标注基于 CH2 波形，仅供研究复核，不是 PSG 真值，也不用于触发。</p>
+            <p class="research-intro" id="n3-research-status" role="status">展开后加载本机复核批次。</p>
+            <div class="research-grid" id="n3-research-content" hidden>
+                <div class="research-lists">
+                    <section class="research-card research-manual" aria-labelledby="n3-manual-heading">
+                        <h3 id="n3-manual-heading">人工复核进度</h3>
+                        <p id="n3-manual-progress" role="status">正在读取本机标注…</p>
+                        <div class="research-controls">
+                            <button type="button" class="button secondary" id="n3-manual-resume" disabled>继续上次</button>
+                            <button type="button" class="button secondary" id="n3-manual-export" disabled>导出 CSV</button>
+                        </div>
+                        <p id="n3-manual-export-status" role="status" hidden></p>
+                    </section>
+                    <section class="research-card" aria-labelledby="n3-prelabel-heading">
+                        <h3 id="n3-prelabel-heading">研究性预标注</h3>
+                        <div class="research-scroll"><table class="analysis-table research-table">
+                            <thead><tr><th scope="col">优先级</th><th scope="col">日期 / EDF 相对时间</th><th scope="col">预标注</th></tr></thead>
+                            <tbody id="n3-prelabel-rows"></tbody>
+                        </table></div>
+                    </section>
+                    <section class="research-card" aria-labelledby="n3-ranked-heading">
+                        <h3 id="n3-ranked-heading">待复核排序</h3>
+                        <div class="research-controls">
+                            <label for="n3-research-record">记录</label>
+                            <select id="n3-research-record"></select>
+                            <span id="n3-research-count" aria-live="polite"></span>
+                            <label class="research-check"><input type="checkbox" id="n3-manual-unreviewed" disabled>仅未标注</label>
+                        </div>
+                        <div class="research-scroll research-queue"><table class="analysis-table research-table">
+                            <thead><tr><th scope="col">原排序</th><th scope="col">日期 / EDF 相对时间</th><th scope="col">高幅（秒）</th><th scope="col">N3 票数 / 质量</th><th scope="col">人工标注</th></tr></thead>
+                            <tbody id="n3-ranked-rows"></tbody>
+                        </table></div>
+                    </section>
+                </div>
+                <section class="research-card research-view" aria-labelledby="n3-research-wave-heading">
+                    <h3 id="n3-research-wave-heading">波形与前后片段</h3>
+                    <p id="n3-research-wave-status" role="status">点选左侧的预标注或待复核片段。</p>
+                    <div id="n3-research-wave-content" hidden>
+                        <p id="n3-research-wave-note" class="research-wave-note"></p>
+                        <div class="research-controls">
+                            <label for="n3-research-span">波形范围</label>
+                            <select id="n3-research-span">
+                                <option value="all">显示前后片段</option>
+                                <option value="0">仅当前 30 秒</option>
+                                <option value="-1">仅前一段</option>
+                                <option value="1">仅后一段</option>
+                            </select>
+                        </div>
+                        <figure class="research-figure">
+                            <canvas id="n3-research-waveform" role="img" aria-label="原始 CH2、高通与慢波"></canvas>
+                            <figcaption>保留原始基线。下两轨共用 µV 刻度，未归一化；蓝底为选中段，慢波轨的黄色区间为高幅慢波形态。时间按 EDF 样本顺序，不补丢点。</figcaption>
+                        </figure>
+                        <div class="research-scroll"><table class="analysis-table research-table">
+                            <thead><tr><th scope="col">位置 / EDF 时间</th><th scope="col">去漂移 / YASA / 曹操</th><th scope="col">高幅（秒）</th><th scope="col">质量提醒</th></tr></thead>
+                            <tbody id="n3-research-neighbors"></tbody>
+                        </table></div>
+                        <form class="research-manual-editor" id="n3-manual-editor" aria-labelledby="n3-manual-editor-heading" hidden>
+                            <h4 id="n3-manual-editor-heading">人工标注 · 当前 30 秒</h4>
+                            <fieldset class="research-manual-labels" id="n3-manual-labels">
+                                <legend>人工判断</legend>
+                                <div class="research-controls">
+                                    <label class="research-check"><input type="radio" name="n3-manual-label" value="suspected_n3">疑似 N3</label>
+                                    <label class="research-check"><input type="radio" name="n3-manual-label" value="not_n3">非 N3</label>
+                                    <label class="research-check"><input type="radio" name="n3-manual-label" value="uncertain">不确定</label>
+                                    <label class="research-check"><input type="radio" name="n3-manual-label" value="artifact">伪迹</label>
+                                </div>
+                            </fieldset>
+                            <label for="n3-manual-note">备注（可选）</label>
+                            <textarea id="n3-manual-note" rows="2" maxlength="2000" placeholder="例如：慢波跨段连续；疑似基线漂移"></textarea>
+                            <div class="research-controls">
+                                <button type="submit" class="button primary" id="n3-manual-save" disabled>保存标注</button>
+                                <span id="n3-manual-edit-status" role="status"></span>
+                            </div>
+                        </form>
+                    </div>
+                </section>
+            </div>
+        </details>
 
         <div class="analysis-empty" id="analysis-empty" aria-live="polite" data-loading="false">
             <div class="analysis-empty-content">
@@ -120,6 +255,8 @@
 
     <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
     <script src="analysis-ui.js"></script>
+    <script src="anysleep-ui.js"></script>
+    <script src="n3-research-review-ui.js"></script>
     <script src="analysis-window.js"></script>
 </body>
 </html>

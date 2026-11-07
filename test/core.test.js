@@ -542,6 +542,12 @@ test('EEG rolling frame rate reports a stable 250 FPS and expires stale samples'
     const justStarted = Core.createEegStreamStats();
     Core.trackEegStreamFrame(justStarted, 1, 100);
     assert.equal(Core.eegStreamFrameRate(justStarted, 100), 0);
+
+    const burst = Core.createEegStreamStats();
+    for (let index = 0; index < 100; index++) Core.trackEegStreamFrame(burst, index, 1600 + index * 4);
+    assert.equal(Core.eegStreamFrameRate(burst, 2000), 250);
+    assert.equal(Core.eegStreamThroughput(burst, 2000), 50);
+    assert.equal(Core.eegStreamThroughput(burst, 4000), 0);
 });
 
 test('EEG CSV preserves existing columns and stores device seq as sample_index', () => {
@@ -620,7 +626,7 @@ test('realtime page exposes a 30-second sleep-stage stimulus protocol with safet
     assert.match(app, /n3Postprocessed/);
 });
 
-test('user-visible product name is Cao Cao while the historical data directory stays compatible', () => {
+test('user-visible product name is Cao Cao and storage is version-isolated', () => {
     const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
     const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.html'), 'utf8');
     const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
@@ -629,7 +635,9 @@ test('user-visible product name is Cao Cao while the historical data directory s
     assert.ok(html.includes(`<title>曹操 v${packageJson.version}</title>`));
     assert.match(html, /<strong>曹操<\/strong><span>脑电采集与光照<\/span>/);
     assert.match(main, /title:\s*'曹操'/);
-    assert.match(main, /'BrainLume Desktop'/);
+    assert.match(main, /Storage\.dataPaths/);
+    assert.match(main, /Storage\.profilePath/);
+    assert.doesNotMatch(main, /'brainlume-desktop'/);
     assert.ok(report.includes(`曹操 v${packageJson.version}`));
     assert.match(readme, /^# 曹操$/m);
 });

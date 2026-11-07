@@ -167,3 +167,31 @@ test('BLE transport reports the final failing stage after bounded retries', asyn
         else delete globalThis.navigator;
     }
 });
+
+test('a pending system GATT connection times out without overlapping a retry', async () => {
+    const sandbox = { navigator: { bluetooth: {} }, setTimeout, clearTimeout };
+    const source = fs.readFileSync(require.resolve('../src/transport.js'), 'utf8');
+    require('node:vm').runInNewContext(source, sandbox);
+    const { BleTransport } = sandbox.BrainLumeBle;
+    const transport = new BleTransport({ connectAttempts: 6, connectTimeoutMs: 10 });
+    let connectCalls = 0;
+    let disconnectCalls = 0;
+    let complete;
+    transport.device = {
+        gatt: {
+            connected: false,
+            connect() {
+                connectCalls++;
+                return new Promise(resolve => { complete = resolve; });
+            },
+            disconnect() { disconnectCalls++; },
+        },
+    };
+    await assert.rejects(transport.connect(), error => error.code === 'BLE_GATT_TIMEOUT'
+        && error.bleStage === 'gatt_connect' && error.attempts === 1);
+    complete({});
+    await Promise.resolve();
+    assert.equal(connectCalls, 1);
+    assert.equal(disconnectCalls, 1);
+    assert.equal(transport.server, null);
+});

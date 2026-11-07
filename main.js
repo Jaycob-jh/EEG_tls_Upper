@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, dialog, ipcMain, shell, session, Menu, net, safeStorage } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell, session, Menu, net, powerSaveBlocker, safeStorage } = require('electron');
 const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
@@ -11,15 +11,21 @@ const { Worker } = require('node:worker_threads');
 const Core = require('./src/core');
 const AnalysisReport = require('./src/analysis-report');
 const { readSavedYasaResult } = require('./src/saved-yasa');
+const { registerResearchReview } = require('./src/n3-research-review');
 const { parseSessionStagingHistory } = require('./src/session-history');
 const { EdfWriter } = require('./src/edf');
 const { encodeRawRecords } = require('./src/raw-recording');
 const GithubSync = require('./src/github-sync');
+const Storage = require('./src/storage-paths');
+const APP_VERSION = require('./package.json').version;
 const BLE_DEVICE_NAME = 'BrainLume2.0C';
 const APP_ICON_PATH = path.join(__dirname, 'assets', 'cao-cao-icon-original.png');
 
 app.setName('曹操');
-app.setPath('userData', path.join(app.getPath('appData'), 'brainlume-desktop'));
+const profileDirectory = Storage.profilePath(app.getPath('appData'), APP_VERSION);
+fs.mkdirSync(profileDirectory, { recursive: true, mode: 0o700 });
+app.setPath('userData', profileDirectory);
+app.setPath('sessionData', profileDirectory);
 
 let mainWindow = null;
 let splashWindow = null;
@@ -28,6 +34,7 @@ let pendingBluetoothSelection = null;
 let bluetoothCandidates = new Map();
 let bluetoothSelectionTimer = null;
 const activeRecordings = new Map();
+let recordingPowerBlocker = null;
 const activeAnalyses = new Map();
 let githubSyncState = null;
 let githubSyncStatePromise = null;
@@ -96,7 +103,8 @@ async function openHistoryReplayReport() {
     const error = await shell.openPath(file); if (error) throw new Error(error);
     return true;
 }
-const deviceDiagnosticMode = process.argv.includes('--device-diagnostic');
+const deviceDiagnosticMode = process.argv.includes('--device-diagnostic-long') ? 'device-diagnostic-long'
+    : process.argv.includes('--device-diagnostic') ? 'device-diagnostic' : null;
 const debugCliMode = process.argv.includes('--debug-cli');
 const debugCommandArg = process.argv.find(value => value.startsWith('--debug-command='));
 const debugCommand = debugCommandArg ? JSON.parse(Buffer.from(debugCommandArg.slice('--debug-command='.length), 'base64').toString('utf8')) : null;
@@ -134,6 +142,9 @@ function configureApplicationMenu() {
             { label: '打开会话目录', click: () => { void openDataDirectory('sessions'); } },
             { label: '打开日志目录', click: () => { void openDataDirectory('logs'); } },
             { type: 'separator' },
+            { label: '离线分期对照…', click: () => {
+                void openAnalysisWindow('').catch(error => dialog.showErrorBox('无法打开记录分析', error.message));
+            } },
             { label: '导出当前分析报告', click: () => { void exportCurrentAnalysisFromMenu(); } },
             { label: '保存当前页面截图', click: () => { void saveFocusedScreenshotFromMenu(); } },
             { type: 'separator' },
@@ -169,13 +180,7 @@ function screenshotFilePart(value) {
 }
 
 function appDataPaths() {
-    const root = path.join(app.getPath('documents'), 'BrainLume Desktop');
-    return {
-        root,
-        plans: path.join(root, 'plans.json'),
-        sessions: path.join(root, 'sessions'),
-        logs: path.join(root, 'logs'),
-    };
+    return { ...Storage.dataPaths(app.getPath('documents'), APP_VERSION), userData: app.getPath('userData') };
 }
 
 async function ensureDataDirectories() {
@@ -413,7 +418,7 @@ function githubApiRequest(pathname, { method = 'GET', token = '', body = null } 
             callback(value);
         };
         request.setHeader('Accept', 'application/vnd.github+json');
-        request.setHeader('User-Agent', 'CaoCao-EEG-Desktop/0.6.0');
+        request.setHeader('User-Agent', 'CaoCao-EEG-Desktop/0.6.1');
         request.setHeader('X-GitHub-Api-Version', '2022-11-28');
         if (token) request.setHeader('Authorization', `Bearer ${token}`);
         if (body !== null) request.setHeader('Content-Type', 'application/json');
@@ -993,21 +998,28 @@ async function startRecording(metadata) {
         recording.rawPartial = path.join(directory, 'raw_adc.bin.partial');
         await fsp.writeFile(recording.rawPartial, Buffer.alloc(0), { flag: 'wx' });
     }
-    activeRecordings.set(id, recording);
     await fsp.appendFile(recording.eventsPath, `${JSON.stringify({ ts: nowIso(), level: 'info', action: 'session_started', sessionId: id })}\n`, 'utf8');
+    if (recordingPowerBlocker == null) recordingPowerBlocker = powerSaveBlocker.start('prevent-app-suspension');
+    activeRecordings.set(id, recording);
     return { ...session, edfPath: edfPartial };
 }
 
-async function appendRecordingSamples(id, samples) {
+async function appendRecordingSamples(id, samples, gapEvents = []) {
     const recording = activeRecordings.get(id);
-    if (!recording) throw new Error(`Recording ${id} is not active`);
+    if (!recording || recording.stopPromise || recording.finalizedEdf) throw new Error(`Recording ${id} is not accepting samples`);
     if (!Array.isArray(samples) || samples.length === 0) return { rows: recording.rows };
     recording.appendPromise = recording.appendPromise.then(async () => {
         if (!recording.rawPartial) return recording.edfWriter.appendSamples(samples);
         const raw = encodeRawRecords(samples);
         const values = samples.map(s => s.rawCode * 4.5e6 / (24 * 8388608));
         await fsp.appendFile(recording.rawPartial, raw);
-        return recording.edfWriter.appendSamples(values);
+        const result = await recording.edfWriter.appendSamples(values);
+        if (Array.isArray(gapEvents) && gapEvents.length) {
+            const lines = gapEvents.map(event => JSON.stringify({ ...event, sessionId: id })).join('\n') + '\n';
+            try { await fsp.appendFile(recording.eventsPath, lines, 'utf8'); }
+            catch (error) { console.error('Failed to write EEG gap diagnostics:', error.message); }
+        }
+        return result;
     });
     const result = await recording.appendPromise;
     recording.rows = result.rows;
@@ -1067,6 +1079,10 @@ async function stopRecording(id, status = 'completed', reason = null) {
         );
         await writeJsonAtomic(sessionJsonPath, finalSession);
         activeRecordings.delete(id);
+        if (activeRecordings.size === 0 && recordingPowerBlocker != null) {
+            powerSaveBlocker.stop(recordingPowerBlocker);
+            recordingPowerBlocker = null;
+        }
         if (finalSession.githubUpload.status === 'queued') void processGithubUploadQueue();
         return { ...finalSession, edfPath: recording.edfFinal };
     })().finally(() => { recording.stopPromise = null; });
@@ -1309,6 +1325,53 @@ async function runYasaStaging(sessionId) {
     ].filter(Boolean).join('\n'));
 }
 
+let anySleepRunning = false;
+
+async function runAnySleepComparison(sender, sessionId) {
+    if (!analysisWindow || analysisWindow.isDestroyed() || analysisWindow.webContents.id !== sender.id) {
+        throw new Error('请在记录分析窗口运行离线对照');
+    }
+    if (anySleepRunning) throw new Error('已有一个离线分期对照正在运行');
+    anySleepRunning = true;
+    try {
+        const options = { rootDir: __dirname };
+        if (sessionId) {
+            const selected = (await listSessions()).find(item => item.id === sessionId);
+            if (!selected || selected.status === 'recording') throw new Error('请选择已结束的采集记录');
+            options.edfPath = path.join(selected.directory, 'eeg_raw.edf');
+            options.eventsPath = path.join(selected.directory, 'events.jsonl');
+            if (!isSessionPath(options.edfPath) || !isSessionPath(options.eventsPath)) {
+                throw new Error('记录路径不在会话目录中');
+            }
+            if (Number.isSafeInteger(selected.rows) && selected.rows > 0) options.rows = selected.rows;
+        } else {
+            const selected = await dialog.showOpenDialog(analysisWindow, {
+                title: '选择 CH2 EDF 进行离线分期对照',
+                properties: ['openFile'],
+                filters: [{ name: 'EEG EDF', extensions: ['edf'] }],
+            });
+            if (selected.canceled || !selected.filePaths.length) return null;
+            options.edfPath = selected.filePaths[0];
+        }
+        const local = await readJson(path.join(__dirname, 'python', 'anysleep.local.json'), {});
+        options.python = local.python || process.env.BRAINLUME_ANYSLEEP_PYTHON;
+        options.outputRoot = local.outputRoot || path.join(appDataPaths().root, 'analysis', 'anysleep');
+        return await new Promise((resolve, reject) => {
+            const worker = new Worker(path.join(__dirname, 'src', 'anysleep-comparison.js'), { workerData: options });
+            worker.on('message', message => {
+                if (message.progress) {
+                    if (!sender.isDestroyed()) sender.send('analysis:anysleep-progress', message.progress);
+                } else if (message.result) resolve(message.result);
+                else if (message.error) reject(new Error(message.error));
+            });
+            worker.once('error', reject);
+            worker.once('exit', code => reject(new Error('离线分期进程已退出（' + code + '）')));
+        });
+    } finally {
+        anySleepRunning = false;
+    }
+}
+
 function analysisRequest(entry, action, payload = {}, timeoutMs = 300000) {
     const id = crypto.randomUUID();
     return new Promise((resolve, reject) => {
@@ -1498,7 +1561,7 @@ function registerIpc() {
     ipcMain.on('ble:select-device', (_event, id) => {
         completeBluetoothSelection(id);
     });
-    ipcMain.on('launch:get-mode', event => { event.returnValue = deviceDiagnosticMode ? 'device-diagnostic' : 'normal'; });
+    ipcMain.on('launch:get-mode', event => { event.returnValue = deviceDiagnosticMode || 'normal'; });
     ipcMain.on('debug:get-request', event => { event.returnValue = debugCommand; });
     ipcMain.handle('paths:get', async () => ensureDataDirectories());
     ipcMain.handle('plans:load', async () => {
@@ -1511,7 +1574,7 @@ function registerIpc() {
         return true;
     });
     ipcMain.handle('session:start', (_event, metadata) => startRecording(metadata));
-    ipcMain.handle('session:append-samples', (_event, id, samples) => appendRecordingSamples(id, samples));
+    ipcMain.handle('session:append-samples', (_event, id, samples, gapEvents) => appendRecordingSamples(id, samples, gapEvents));
     ipcMain.handle('session:event', (_event, id, record) => appendRecordingEvent(id, record));
     ipcMain.handle('session:stop', (_event, id, status, reason) => stopRecording(id, status, reason));
     ipcMain.handle('sessions:list', () => listSessions());
@@ -1534,6 +1597,9 @@ function registerIpc() {
     ));
     ipcMain.handle('analysis:export', (_event, analysisId) => exportAnalysisReport(analysisId));
     ipcMain.handle('analysis:yasa', (_event, sessionId) => runYasaStaging(sessionId));
+    ipcMain.handle('analysis:anysleep', (event, sessionId) => runAnySleepComparison(event.sender, sessionId));
+    registerResearchReview(ipcMain, path.join(__dirname, 'n3-research.local.json'),
+        () => analysisWindow && !analysisWindow.isDestroyed() ? analysisWindow.webContents : null);
     ipcMain.handle('analysis:close', (_event, analysisId) => closeAnalysis(analysisId));
     ipcMain.handle('sleep:model-info', () => sleepRequest('info'));
     ipcMain.handle('sleep:infer', (_event, payload) => sleepRequest('infer', payload));
@@ -1555,9 +1621,8 @@ function registerIpc() {
         return saveScreenshotForWindow(window, pageTitle);
     });
     ipcMain.handle('diagnostic:complete', async (_event, report) => {
-        const directory = path.join(__dirname, 'artifacts');
-        await fsp.mkdir(directory, { recursive: true });
-        const filePath = path.join(directory, 'device-diagnostic.json');
+        const { logs } = await ensureDataDirectories();
+        const filePath = path.join(logs, `device-diagnostic-${localFileStamp()}.json`);
         await writeJsonAtomic(filePath, report);
         setTimeout(() => app.quit(), 250);
         return filePath;

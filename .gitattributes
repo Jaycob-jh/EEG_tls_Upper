@@ -1,0 +1,2 @@
+# Model integrity checks hash the raw metadata bytes. Preserve LF on Windows.
+/models/stage1_sleep.metadata.json text eol=lf

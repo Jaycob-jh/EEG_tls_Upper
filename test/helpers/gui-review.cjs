@@ -16,15 +16,42 @@ exports.run=async ({page,connect,until,step,screenshot,output,root})=>{
         await size(page,width,height);
         await page.evaluate(`document.querySelector('[data-page="device"]').click(); document.querySelector('.workspace').scrollTop=0`);
         await measure(page,`device-${width}`);
-        await page.evaluate(`document.querySelector('#simple-n3-settings').click()`);
+        await page.evaluate(`document.querySelector(document.querySelector('#simple-light-title').textContent === '手动光照' ? '#simple-manual-light' : '#simple-n3-settings').click()`);
         await measure(page,`auto-settings-${width}`);
-        await page.evaluate(`document.querySelector('#sleep-stimulus-settings-dialog').close();document.querySelector('#simple-manual-light').click()`);
+        await page.evaluate(`document.querySelector('#sleep-stimulus-settings-dialog').close();document.querySelector(document.querySelector('#simple-light-title').textContent === '手动光照' ? '#simple-n3-settings' : '#simple-manual-light').click()`);
         await measure(page,`manual-${width}`);
         await page.evaluate(`document.querySelector('#manual-stimulus-settings-dialog').close();document.querySelector('[data-page="realtime"]').click()`);
         await measure(page,`realtime-${width}`);
         await page.evaluate(`document.querySelector('[data-page="records"]').click(); document.querySelector('.workspace').scrollTop=0`);
         await measure(page,`records-${width}`);
     }
+    await step('GUI：手动和自动模式跟随设置，重载保留手动参数且不启动设备',async()=>{
+        await page.evaluate(`document.querySelector('[data-page="device"]').click();document.querySelector(document.querySelector('#simple-light-title').textContent==='手动光照'?'#simple-n3-settings':'#simple-manual-light').click();for(const [id,value]of Object.entries({'home-light-channel':'3','home-light-frequency':'40','home-light-power':'5','home-light-duration':'600'})){const e=document.getElementById(id);e.value=value;e.dispatchEvent(new Event('change',{bubbles:true}));}document.querySelector('#manual-stimulus-settings-dialog').close()`);
+        assert.equal(await page.evaluate(`document.querySelector('#simple-light-title').textContent`),'手动光照');
+        assert.match(await page.evaluate(`document.querySelector('#simple-n3-parameters').textContent`),/600 秒/);
+        const protocol=await page.evaluate(`localStorage.getItem('sleepStimulusProtocol')`);
+        await page.evaluate(`window.__beforeModeReload=true`);
+        await page.call('Page.reload');
+        await until(page,`!window.__beforeModeReload && document.querySelector('#realtime-model')?.textContent==='已就绪'`);
+        await page.evaluate(fs.readFileSync(path.join(root,'test/helpers/simulated-bluetooth.js'),'utf8'));
+        assert.equal(await page.evaluate(`document.querySelector('#simple-light-title').textContent`),'手动光照');
+        assert.match(await page.evaluate(`document.querySelector('#simple-n3-parameters').textContent`),/600 秒/);
+        assert.equal(await page.evaluate(`workflowDevice.commands.length`),0);
+        await page.evaluate(`document.querySelector('#simple-manual-light').click();document.querySelector('#sleep-stimulus-settings-dialog').close()`);
+        assert.equal(await page.evaluate(`document.querySelector('#simple-light-title').textContent`),'分期自动光照');
+        assert.equal(await page.evaluate(`localStorage.getItem('sleepStimulusProtocol')`),protocol);
+    });
+    await step('GUI：多分期保存后切换手动再切回，保留 N2 和 REM，且不发送命令',async()=>{
+        await page.evaluate(`document.querySelector('#simple-n3-settings').click();for(const e of document.querySelectorAll('#target-stage-selector input'))e.checked=['N2','REM'].includes(e.value);document.querySelector('#sleep-stimulus-save').click()`);
+        await until(page,`document.querySelector('#sleep-stimulus-settings-dialog').open===false`);
+        assert.deepEqual(await page.evaluate(`JSON.parse(localStorage.getItem('sleepStimulusProtocol')).targetStages`),['N2','REM']);
+        assert.match(await page.evaluate(`document.querySelector('#simple-n3-parameters').textContent`),/N2 \/ REM/);
+        await page.evaluate(`document.querySelector('#simple-manual-light').click();document.querySelector('#manual-stimulus-settings-dialog').close();document.querySelector('#simple-manual-light').click()`);
+        assert.equal(await page.evaluate(`document.querySelector('#sleep-stimulus-n3-enabled').checked`),false);
+        assert.equal(await page.evaluate(`document.querySelector('input[name="sleep-stimulus-stage"][value="REM"]').checked`),true);
+        await page.evaluate(`document.querySelector('#sleep-stimulus-cancel').click()`);
+        assert.equal(await page.evaluate(`workflowDevice.commands.length`),0);
+    });
     await step('GUI：无设备时也能回放，过程不会改动光照设置或发送命令',async()=>{
         const before=await page.evaluate(`localStorage.getItem('sleepStimulusProtocol')`);
         await page.evaluate(`document.querySelector('#history-replay-start').click()`);
@@ -34,7 +61,7 @@ exports.run=async ({page,connect,until,step,screenshot,output,root})=>{
         assert.equal(await page.evaluate(`document.querySelector('#history-replay-open').disabled`),false);
     });
     await step('GUI：未连接时参数可编辑，关闭后不会误开灯',async()=>{
-        await page.evaluate(`document.querySelector('[data-page="device"]').click();document.querySelector('#simple-n3-settings').click();document.querySelector('#sleep-stimulus-frequency').value='40';document.querySelector('#sleep-stimulus-settings-dialog').close()`);
+        await page.evaluate(`document.querySelector('[data-page="device"]').click();document.querySelector(document.querySelector('#simple-light-title').textContent === '手动光照' ? '#simple-manual-light' : '#simple-n3-settings').click();document.querySelector('#sleep-stimulus-frequency').value='40';document.querySelector('#sleep-stimulus-settings-dialog').close()`);
         assert.equal(await page.evaluate(`workflowDevice.commands.length`),0);
     });
     await step('GUI：每个主页面滚动后仍可找到全部停止',async()=>{
@@ -44,7 +71,7 @@ exports.run=async ({page,connect,until,step,screenshot,output,root})=>{
         }
     });
     await step('GUI：非法参数不会保存，保存与取消的结果清楚',async()=>{
-        await page.evaluate(`document.querySelector('[data-page="device"]').click();document.querySelector('#simple-n3-settings').click()`);
+        await page.evaluate(`document.querySelector('[data-page="device"]').click();document.querySelector(document.querySelector('#simple-light-title').textContent === '手动光照' ? '#simple-manual-light' : '#simple-n3-settings').click()`);
         assert.equal(await page.evaluate(`document.querySelector('#sleep-stimulus-enabled').getClientRects().length`),0);
         const before=await page.evaluate(`localStorage.getItem('sleepStimulusProtocol')`);
         await page.evaluate(`document.querySelector('#sleep-stimulus-duration').value='0';document.querySelector('#sleep-stimulus-save').click()`);
@@ -55,7 +82,7 @@ exports.run=async ({page,connect,until,step,screenshot,output,root})=>{
         await until(page,`document.querySelector('#sleep-stimulus-settings-dialog').open===false`);
         assert.equal(await page.evaluate(`JSON.parse(localStorage.getItem('sleepStimulusProtocol')).frequencyHz`),40);
         assert.match(await page.evaluate(`document.querySelector('#simple-n3-parameters').textContent`),/每次 10 秒/);
-        await page.evaluate(`document.querySelector('#simple-n3-settings').click();document.querySelector('#sleep-stimulus-frequency').value='41';document.querySelector('#sleep-stimulus-cancel').click();document.querySelector('#simple-n3-settings').click()`);
+        await page.evaluate(`document.querySelector(document.querySelector('#simple-light-title').textContent === '手动光照' ? '#simple-manual-light' : '#simple-n3-settings').click();document.querySelector('#sleep-stimulus-frequency').value='41';document.querySelector('#sleep-stimulus-cancel').click();document.querySelector(document.querySelector('#simple-light-title').textContent === '手动光照' ? '#simple-manual-light' : '#simple-n3-settings').click()`);
         assert.equal(await page.evaluate(`document.querySelector('#sleep-stimulus-frequency').value`),'40');
         for(let i=0;i<8;i++) await page.call('Input.dispatchKeyEvent',{type:'keyDown',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});
         assert.equal(await page.evaluate(`document.activeElement.closest('dialog')?.id`),'sleep-stimulus-settings-dialog');
@@ -67,10 +94,11 @@ exports.run=async ({page,connect,until,step,screenshot,output,root})=>{
     const previous=JSON.parse(fs.readFileSync(process.env.CAOCAO_GUI_SEED_RESULTS || path.join(root,'artifacts/workflow-check-20261104/results.json'),'utf8'));
     const seed=previous.results.find(item=>item.detail?.directory)?.detail?.directory;
     if(seed&&fs.existsSync(seed)){
-        const destination=path.join(output,'documents/BrainLume Desktop/sessions/gui-synthetic-record');
+        const sessionsRoot=(await page.evaluate(`window.desktopAPI.getPaths()`)).sessions;
+        const destination=path.join(sessionsRoot,'gui-synthetic-record');
         fs.cpSync(seed,destination,{recursive:true});
         const metadata=JSON.parse(fs.readFileSync(path.join(destination,'session.json'),'utf8'));
-        const other=path.join(output,'documents/BrainLume Desktop/sessions/gui-other-record');
+        const other=path.join(sessionsRoot,'gui-other-record');
         fs.cpSync(seed,other,{recursive:true});
         fs.writeFileSync(path.join(other,'session.json'),JSON.stringify({...metadata,id:'gui-other-record',planName:'另一条测试记录',rows:1000}));
         fs.writeFileSync(path.join(other,'raw_adc.bin'),fs.readFileSync(path.join(other,'raw_adc.bin')).subarray(0,16000));

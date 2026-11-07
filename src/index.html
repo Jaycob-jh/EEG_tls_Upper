@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>曹操 v0.6.0</title>
+    <title>曹操 v0.6.1</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -42,7 +42,7 @@
                 <div class="simple-workflow" aria-label="采集与分期自动光照">
                     <article class="workflow-step"><span class="step-number">1</span><h2>连接设备</h2><strong id="simple-device-status">未连接</strong><small>打开设备，连接后开始采集</small><button class="button primary" id="connect-button">连接设备</button></article>
                     <article class="workflow-step"><span class="step-number">2</span><h2>采集脑电</h2><strong id="simple-eeg-status">未开始</strong><small>采集时自动保存原始数据</small><button class="button success" id="eeg-toggle-button">开始采集</button></article>
-                    <article class="workflow-step"><span class="step-number">3</span><h2>分期自动光照</h2><strong id="simple-n3-status">未开启</strong><small id="simple-n3-parameters">读取已保存参数</small><button class="button primary" id="simple-n3-toggle" type="button">开启自动光照</button><div class="workflow-secondary-actions"><button class="button text" id="simple-n3-settings" type="button">选择分期 / 参数</button><button class="button secondary" id="simple-manual-light" type="button">手动光照</button></div></article>
+                    <article class="workflow-step"><span class="step-number">3</span><h2 id="simple-light-title">分期自动光照</h2><strong id="simple-n3-status">未开启</strong><small id="simple-n3-parameters">读取已保存参数</small><button class="button primary" id="simple-n3-toggle" type="button">开启自动光照</button><div class="workflow-secondary-actions"><button class="button text" id="simple-n3-settings" type="button">选择分期 / 参数</button><button class="button secondary" id="simple-manual-light" type="button">手动光照</button></div></article>
                 </div>
                 <details class="advanced-controls device-details"><summary>设备详细数据</summary>
                 <div class="metrics-grid">
@@ -65,6 +65,7 @@
                             <div><p class="eyebrow">REALTIME EEG</p><h2 id="wave-title">CH2 实时脑电</h2></div>
                             <div class="inline-controls">
                                 <label>X 轴<select id="wave-x-range"><option value="5">5 秒</option><option value="10">10 秒</option><option value="20" selected>20 秒</option><option value="30">30 秒</option><option value="60">60 秒</option></select></label>
+                                <label>纵轴<select id="wave-y-range"><option value="0">自动</option><option value="50">±50 µV</option><option value="100">±100 µV</option><option value="250">±250 µV</option><option value="500">±500 µV</option></select></label>
                                 <label>刷新速度<select id="wave-refresh-rate"><option value="10">慢速</option><option value="30" selected>标准</option><option value="60">快速</option></select></label>
                                 <label>通道<select id="channel-select"></select></label>
                             </div>
@@ -73,7 +74,7 @@
                             <section class="wave-stream-card processed">
                                 <div class="wave-stream-heading"><strong>脑电波形</strong><small>已过滤部分干扰，原始数据另行保存</small></div>
                                 <div class="wave-canvas-wrap"><canvas id="eeg-canvas"></canvas><div class="wave-empty" id="wave-empty">开始采集后显示波形</div></div>
-                                <div class="wave-footer"><span>波形高度自动调整</span><span id="wave-range">尚未采集</span><span id="wave-value" title="当前滤波后的数值">0.00 µV</span></div>
+                                <div class="wave-footer"><span id="wave-range">尚未采集</span><span id="wave-value" title="当前滤波后的数值">0.00 µV</span><span id="wave-peak-to-peak" title="当前显示窗口内，滤波后的最大值减最小值，按纵轴压缩前的样本计算">峰峰值 --</span><span id="wave-saturation" title="当前窗口内，原始值达到设备量程 99% 的样本比例">原始饱和 --</span></div>
                             </section>
                         </div>
                     </section>

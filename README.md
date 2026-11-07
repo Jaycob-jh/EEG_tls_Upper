@@ -7,7 +7,7 @@ EEG CH2；工程调试页仍允许在 CH1~CH8 中选择测试通道。这里的 
 
 ## 当前版本
 
-- 桌面源码版本：`0.6.0`；本次成品发布为 Apple Silicon macOS arm64，Android 保持原版本。
+- 桌面源码版本：`0.6.1`；当前修复将 0.5 与 0.6 的设置、浏览器存储和记录目录隔离，Android 保持原版本。
 - v0.6.0 的变化与限制见 [发布说明](RELEASE_NOTES_v0.6.0.md)。旧定时方案已停用。
 - BrainLume SDK：`1.0.3`
 - 框架：Electron + 原生 HTML/CSS/JavaScript
@@ -172,10 +172,12 @@ npm install
 
 ## 数据目录
 
-运行数据默认保存在 Windows“文档”目录：
+0.6 系列将记录保存在“文档/曹操/v0.6”，独立于旧版的“文档/BrainLume Desktop”。同一系列的补丁更新保留本系列数据，跨系列不会自动混入记录。
+
+设置与浏览器存储使用独立的 `caocao-desktop-v0.6` 用户目录；旧版仍使用 `brainlume-desktop`。迁移需要先停止全部采集，并核对版本和文件校验值；不会在启动时自动合并旧数据。
 
 ```text
-Documents/BrainLume Desktop/
+Documents/曹操/v0.6/
 ├─ plans.json
 ├─ logs/YYYY-MM-DD.jsonl
 └─ sessions/

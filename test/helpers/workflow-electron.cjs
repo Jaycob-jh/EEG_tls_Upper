@@ -5,7 +5,8 @@ const fs = require('node:fs');
 const { app, BrowserWindow, dialog } = require('electron');
 const root = process.env.CAOCAO_WORKFLOW_DIR;
 if (!root) throw new Error('CAOCAO_WORKFLOW_DIR is required');
-for (const dir of ['profile', 'documents']) fs.mkdirSync(path.join(root, dir), { recursive: true });
+for (const dir of ['profile', 'documents', 'app-data']) fs.mkdirSync(path.join(root, dir), { recursive: true });
+app.setPath('appData', path.join(root, 'app-data'));
 const appendFile = fs.promises.appendFile.bind(fs.promises);
 fs.promises.appendFile = async (file, ...args) => {
     const marker = path.join(root, 'fail-next-raw-write');
@@ -17,6 +18,7 @@ fs.promises.appendFile = async (file, ...args) => {
 };
 require(process.env.CAOCAO_WORKFLOW_MAIN || '../../main');
 app.setPath('userData', path.join(root, 'profile'));
+app.setPath('sessionData', path.join(root, 'profile'));
 app.setPath('documents', path.join(root, 'documents'));
 app.on('browser-window-created', (_event, window) => {
     window.on('page-title-updated', event => { event.preventDefault(); window.setTitle('软件流程测试（模拟设备）'); });
