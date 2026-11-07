@@ -70,10 +70,11 @@
         sampleIndex: 0,
         streamStats: Core.createEegStreamStats(),
         streamMetricsTimer: null,
-        waveform: [],
+        waveform: new Float64Array(250 * 60),
         waveformMax: 250 * 60,
         waveformSaturation: new Uint32Array(250 * 60 + 1),
         waveformSampleCount: 0,
+        consecutiveSaturatedSamples: 0,
         waveformFixedHalfRangeUv: Number(localStorage.getItem('waveformFixedHalfRangeUv')) || 0,
         waveformWindowSeconds: waveformDisplay.xRangeSeconds,
         waveformRefreshFps: waveformDisplay.refreshFps,
@@ -277,6 +278,7 @@
             eegStopping: Boolean(state.eegStopPromise),
             modelReady: state.sleepModelReady && !state.liveModelError, lastSampleAt: state.lastEegReceivedAt,
             startedAt: state.liveStartedAt || Date.now(), quality: state.liveQuality, prediction: state.livePrediction,
+            sustainedSaturation: state.consecutiveSaturatedSamples >= 25,
             slowReception: state.liveStartedAt && Date.now() - state.liveStartedAt >= state.streamStats.windowMs
                 && Core.eegStreamThroughput(state.streamStats, performance.now()) < recordingSampleRate() * 0.9,
             protocol: state.sleepStimulusProtocol, matchedCount: gate?.matchedCount,
@@ -292,7 +294,7 @@
             'live-light': status.light, 'live-automation': status.automation, 'live-prediction-age': status.freshness,
             'live-target-probability-label': status.probabilityLabel,
         })) $(id).textContent = value;
-        $('live-duration').textContent = Core.formatDuration(currentRecordingDurationSeconds());
+        $('live-duration').textContent = Core.formatDuration(state.activeSession ? (performance.now() - state.sessionStartedAt) / 1000 : 0);
         const manualLabel = $('manual-light-live-state');
         if (manualLabel) manualLabel.textContent = state.manualLightChannel
             ? `手动光照中 · ${state.manualLightChannel === 3 ? '两个光源' : `光源${state.manualLightChannel}`} ${state.manualLightUntil ? `· 剩余 ${Math.max(0, Math.ceil((state.manualLightUntil - Date.now()) / 1000))} 秒` : ''}`
@@ -655,12 +657,12 @@
         $('wave-title').textContent = `CH${state.selectedChannel} 实时脑电`;
         const sampleCount = state.activeSession ? state.sampleIndex : 0;
         const sampleRate = recordingSampleRate();
-        $('metric-recording').textContent = Core.formatDuration(currentRecordingDurationSeconds());
+        $('metric-recording').textContent = Core.formatDuration(state.activeSession ? (performance.now() - state.sessionStartedAt) / 1000 : 0);
         $('metric-recording-detail').textContent = `${sampleCount.toLocaleString()} 原始样本 · ${sampleRate} Hz`;
         $('metric-seq').textContent = state.streamStats.lastSeq == null ? 'Seq --' : `Seq ${state.streamStats.lastSeq} · 丢 ${state.streamStats.lostFrames}`;
         updateStreamMetricsUi();
         const windowPoints = waveformWindowPoints();
-        const visiblePoints = Math.min(state.waveform.length, windowPoints);
+        const visiblePoints = Math.min(state.waveformSampleCount, state.waveformMax, windowPoints);
         const elapsedSeconds = currentRecordingDurationSeconds();
         const windowSeconds = Math.min(state.waveformWindowSeconds, Core.sampleCountToSeconds(visiblePoints, 250));
         const liveWindow = state.activeSession && visiblePoints > 0
@@ -1658,15 +1660,15 @@
         state.selectedChannel = channel;
         localStorage.setItem('selectedChannel', String(channel));
         state.processor?.reset();
-        state.waveform.length = 0;
         state.waveformSampleCount = 0;
+        state.consecutiveSaturatedSamples = 0;
         state.waveformSaturation[0] = 0;
         resetRealtimeSleep(true);
         state.drawDirty = true;
         updateEegUi();
         addActivity(`已配置 CH${channel}${impedance ? ' 阻抗模式' : ''}`);
         await audit('eeg_configured', { channel, impedance, registersHex: Core.bytesToHex(config) });
-        return config;
+        return result;
     }
 
     async function startEeg(options = {}) {
@@ -1794,21 +1796,11 @@
         let measurementError = null;
         state.impedanceDiagnostics = { received: 0, windows: 0, lastKohm: null, maxAbsRaw: 0, saturated: 0, cleanSamples: 0, longestCleanRun: 0, rawWindow: [] };
         try {
-            const expectedConfig = await applyChannel(channel, true);
-            const registerReadback = await client.readAds1299Registers();
-            const mismatches = [];
-            mismatches.push(...SDK.ads1299.compareAdsConfig(expectedConfig, registerReadback.values));
-            if (mismatches.length) {
-                const first = mismatches[0];
-                await audit('impedance_config_readback_failed', {
-                    channel, expectedHex: Core.bytesToHex(expectedConfig), actualHex: Core.bytesToHex(registerReadback.values), mismatches,
-                }, 'error');
-                throw new Error(`阻抗配置回读不一致: 0x${first.address.toString(16).padStart(2, '0')} expected=0x${first.expected.toString(16).padStart(2, '0')} actual=0x${first.actual.toString(16).padStart(2, '0')}`);
-            }
-            await audit('impedance_config_verified', { channel, registersHex: Core.bytesToHex(registerReadback.values) });
+            const { readback } = await applyChannel(channel, true);
+            await audit('impedance_config_verified', { channel, registersHex: Core.bytesToHex(readback) });
             if (state.impedanceCancellation) throw state.impedanceCancellation;
             state.processor.reset();
-            state.processor.impedance = new SDK.impedance.ImpedanceEstimator({ channelCount: 8, preset: 'brainlume-24na-v1' });
+            state.impedanceDiagnostics.estimator = new SDK.impedance.ImpedanceEstimator({ channelCount: 1, preset: 'brainlume-24na-v1' });
             const measurement = new Promise((resolve, reject) => {
                 const initialWaitMs = 8000;
                 const extensionMs = 2000;
@@ -1819,7 +1811,7 @@
                 const checkProgress = () => {
                     const d = state.impedanceDiagnostics;
                     const cleanCount = d.received - d.saturated;
-                    if (d.received < 1024 && cleanCount > previousCleanCount && waitedMs < maxWaitMs) {
+                    if (d.longestCleanRun < 1024 && cleanCount > previousCleanCount && waitedMs < maxWaitMs) {
                         previousCleanCount = cleanCount;
                         waitedMs += extensionMs;
                         timer = setTimeout(checkProgress, extensionMs);
@@ -1830,7 +1822,7 @@
                     state.cancelImpedanceWaiter = null;
                     const message = d && d.received >= 1024
                         ? d.saturated >= d.received * 0.99 ? '阻抗信号超出设备量程，请检查电极、参考与接线'
-                            : d.longestCleanRun < 1024 ? '未收到连续且未超量程的阻抗数据，请检查电极与连接'
+                            : d.longestCleanRun < 1024 ? `阻抗数据不连续（最长连续 ${d.longestCleanRun}/1024 点），请检查设备连接与电极`
                                 : '已收到阻抗数据，但未得到有效测量值，请检查电极与连接'
                         : `阻抗数据不足（收到 ${d.received}/1024 点），请检查设备连接`;
                     reject(new Error(message));
@@ -1842,8 +1834,7 @@
                     state.cancelImpedanceWaiter = null;
                     reject(error);
                 };
-                state.impedanceWaiter = impedanceValues => {
-                    const kohm = impedanceValues[channel - 1];
+                state.impedanceWaiter = kohm => {
                     if (!Number.isFinite(kohm) || kohm <= 0) return;
                     clearTimeout(timer);
                     state.impedanceWaiter = null;
@@ -1864,9 +1855,8 @@
         } catch (error) {
             measurementError = error;
             $('metric-impedance-state').textContent = `检测失败：${error.message}`;
-            const { rawWindow, ...diagnostics } = state.impedanceDiagnostics;
-            const estimator = state.processor?.impedance;
-            const filtered = estimator?.buffers?.[channel - 1];
+            const { rawWindow, estimator, ...diagnostics } = state.impedanceDiagnostics;
+            const filtered = estimator?.buffers?.[0];
             if (filtered && filtered.length === estimator.options.fftSize && rawWindow.length === filtered.length) {
                 const { sampleRateHz, excitationHz, gain, vrefVolts } = estimator.options;
                 const rawPeak = SDK.impedance.tonePeakCodes(rawWindow, sampleRateHz, excitationHz);
@@ -2140,6 +2130,8 @@
         }
         const seqGap = streamFrame?.seqGap ?? estimatedSeqGap;
         const rawCode = result.rawCodes[channelIndex];
+        const saturated = Math.abs(rawCode) >= 0.99 * 8388607;
+        state.consecutiveSaturatedSamples = saturated ? state.consecutiveSaturatedSamples + 1 : 0;
         if (recording) {
             if (state.sampleIndex < 3 && frame?.raw) {
                 const snapshot = {
@@ -2168,26 +2160,38 @@
             vrefVolts: state.processor?.options?.vrefVolts || 4.5,
             gain: state.processor?.options?.gains?.[channelIndex] || 24,
         });
-        state.waveform.push(result.filteredMicrovolts[channelIndex]);
+        state.waveform[state.waveformSampleCount % state.waveformMax] = result.filteredMicrovolts[channelIndex];
         // Keep cumulative counts for one full display window, so redraws need no sample scan.
         const saturationHistory = state.waveformSaturation;
         const previousSaturation = saturationHistory[state.waveformSampleCount % saturationHistory.length];
         state.waveformSampleCount++;
         saturationHistory[state.waveformSampleCount % saturationHistory.length] =
-            previousSaturation + Number(Math.abs(rawCode) >= 0.99 * 8388607);
+            previousSaturation + Number(saturated);
         if (state.eegRunning && !state.impedanceMode) handleRealtimeSleepSample(modelFilteredMicrovolts, { seqGap, rawCode });
-        if (state.waveform.length > state.waveformMax) state.waveform.splice(0, state.waveform.length - state.waveformMax);
         state.drawDirty = true;
         if (state.impedanceMode && state.impedanceDiagnostics) {
             const d = state.impedanceDiagnostics;
             d.received++;
-            d.rawWindow[(d.received - 1) % 1024] = rawCode;
             d.maxAbsRaw = Math.max(d.maxAbsRaw, Math.abs(rawCode));
-            if (Math.abs(rawCode) >= 0.99 * 8388607) { d.saturated++; d.cleanSamples = 0; }
-            else d.cleanSamples = delta === 1 ? d.cleanSamples + 1 : 1;
-            d.longestCleanRun = Math.max(d.longestCleanRun, d.cleanSamples);
-            if (result.impedanceKohm) { d.windows++; d.lastKohm = result.impedanceKohm[channelIndex]; }
-            if (result.impedanceKohm && d.cleanSamples >= 1024) state.impedanceWaiter?.(result.impedanceKohm);
+            if (saturated) d.saturated++;
+            if (saturated || delta !== 1) {
+                d.cleanSamples = 0;
+                d.rawWindow.length = 0;
+                d.estimator?.reset();
+            }
+            if (!saturated) {
+                d.cleanSamples++;
+                d.longestCleanRun = Math.max(d.longestCleanRun, d.cleanSamples);
+                if (state.impedanceWaiter && d.estimator) {
+                    d.rawWindow[(d.cleanSamples - 1) % 1024] = rawCode;
+                    const estimate = d.estimator.push([result.filteredCodes[channelIndex]]);
+                    if (estimate) {
+                        d.windows++;
+                        d.lastKohm = estimate[0];
+                        state.impedanceWaiter(estimate[0]);
+                    }
+                }
+            }
         }
         const now = performance.now();
         if (now - state.lastUiUpdate > 150) {
@@ -3031,7 +3035,7 @@
         const peakToPeak = $('wave-peak-to-peak');
         const saturation = $('wave-saturation');
         const streams = [
-            { canvas: $('eeg-canvas'), values: () => state.waveform.slice(-waveformWindowPoints()), color: '#111111' },
+            { canvas: $('eeg-canvas'), color: '#111111' },
         ];
         let lastDraw = 0;
         function resize(canvas) {
@@ -3053,14 +3057,19 @@
             context.setTransform(ratio, 0, 0, ratio, 0, 0);
             context.clearRect(0, 0, width, height);
             context.fillStyle = '#fbfdfe'; context.fillRect(0, 0, width, height);
-            const values = stream.values();
+            const count = state.waveformSampleCount;
+            const visible = Math.min(count, state.waveformMax, waveformWindowPoints());
+            const values = new Float64Array(visible);
+            const start = (count - visible) % state.waveformMax;
+            const firstLength = Math.min(visible, state.waveformMax - start);
+            values.set(state.waveform.subarray(start, start + firstLength));
+            values.set(state.waveform.subarray(0, visible - firstLength), firstLength);
             const plotX = 58, plotY = 18, plotW = Math.max(1, width - 74), plotH = Math.max(1, height - 52);
             const plotBottom = plotY + plotH;
             const scale = Core.waveformScale(values, {
                 minimumSpanUv: 20, fixedHalfRangeUv: state.waveformFixedHalfRangeUv,
             });
             const history = state.waveformSaturation;
-            const count = state.waveformSampleCount;
             const saturated = (history[count % history.length] - history[(count - values.length) % history.length]) >>> 0;
             const saturationLabel = values.length ? `原始饱和 ${(100 * saturated / values.length).toFixed(1)}%` : '原始饱和 --';
             if (saturation.textContent !== saturationLabel) saturation.textContent = saturationLabel;
@@ -3141,7 +3150,7 @@
         }
         function draw(timestamp) {
             requestAnimationFrame(draw);
-            if (timestamp - lastDraw < 1000 / state.waveformRefreshFps || !state.drawDirty) return;
+            if (timestamp - lastDraw < 1000 / state.waveformRefreshFps || !state.drawDirty || !streams[0].canvas.getClientRects().length) return;
             lastDraw = timestamp;
             state.drawDirty = false;
             streams.forEach(drawStream);

@@ -18,7 +18,9 @@
         const validPrediction = s.connected && s.eegRunning && s.modelReady && !interrupted && predictionAge != null && predictionAge < 65;
         const countdown = seconds => { const n = Math.ceil(Math.max(0, seconds)); return `${Math.floor(n / 60)}分${n % 60}秒`; };
         let signal = !s.connected ? '设备未连接' : !s.eegRunning ? '尚未采集' : interrupted ? '数据中断，请检查连接'
-            : age == null ? '等待脑电数据' : s.slowReception ? '脑电数据接收偏慢' : !q ? '等待首个 30 秒片段' : q.ok ? '最近一段信号正常' : (reasons[q.reason] || '信号质量异常');
+            : age == null ? '等待脑电数据'
+            : s.sustainedSaturation ? (s.slowReception ? '信号超出范围 · 数据接收偏慢' : '信号超出范围')
+            : s.slowReception ? '脑电数据接收偏慢' : !q ? '等待首个 30 秒片段' : q.ok ? '最近一段信号正常' : (reasons[q.reason] || '信号质量异常');
         let stage = !s.eegRunning ? '尚未采集' : !s.modelReady ? '模型尚未准备好'
             : !prediction ? '等待分期结果' : !validPrediction ? '暂无最新有效结果'
             : prediction.quality?.ok !== true ? '无法判断（信号异常）'

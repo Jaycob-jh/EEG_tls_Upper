@@ -16,6 +16,7 @@
             this.uuids = { ...UUID, ...(options.uuids || {}) };
             this.reuseGrantedDevice = Boolean(options.reuseGrantedDevice);
             this.requireGrantedDevice = Boolean(options.requireGrantedDevice);
+            this.connectTimeoutMs = Math.max(1, Number(options.connectTimeoutMs) || 12000);
             this.connectAttempts = Math.max(1, Number(options.connectAttempts) || 3);
             this.connectRetryDelayMs = Math.max(250, Number(options.connectRetryDelayMs) || 1000);
             this.availableDevices = [];
@@ -62,22 +63,32 @@
 
         async _connectGattOnce(attempt) {
             let stage = 'gatt_connect';
+            let timer;
+            const deadline = new Promise((_, reject) => {
+                timer = setTimeout(() => reject(Object.assign(new Error('系统蓝牙操作超时，请重新选择设备'), {
+                    code: 'BLE_GATT_TIMEOUT',
+                })), this.connectTimeoutMs);
+            });
+            const beforeDeadline = operation => Promise.race([operation, deadline]);
             try {
-                this.server = await this.device.gatt.connect();
+                this.server = await beforeDeadline(this.device.gatt.connect());
                 stage = 'service_discovery';
-                const service = await this.server.getPrimaryService(this.uuids.service);
+                const service = await beforeDeadline(this.server.getPrimaryService(this.uuids.service));
                 stage = 'write_characteristic';
-                this.writeCharacteristic = await service.getCharacteristic(this.uuids.write);
+                this.writeCharacteristic = await beforeDeadline(service.getCharacteristic(this.uuids.write));
                 stage = 'notify_characteristic';
-                this.notifyCharacteristic = await service.getCharacteristic(this.uuids.notify);
+                this.notifyCharacteristic = await beforeDeadline(service.getCharacteristic(this.uuids.notify));
                 stage = 'notification_subscription';
                 this.notifyCharacteristic.addEventListener('characteristicvaluechanged', this._onNotification);
-                await this.notifyCharacteristic.startNotifications();
+                await beforeDeadline(this.notifyCharacteristic.startNotifications());
                 this.device.removeEventListener('gattserverdisconnected', this._onDisconnected);
                 this.device.addEventListener('gattserverdisconnected', this._onDisconnected);
                 this._emitStatus({ phase: 'connected', stage, attempt, maxAttempts: this.connectAttempts });
                 return;
             } catch (error) {
+                if (error.code === 'BLE_GATT_TIMEOUT' && !this.device.gatt.connected) {
+                    try { this.device.gatt.disconnect(); } catch { /* GATT may already be closed */ }
+                }
                 this._clearGattState(true);
                 this._emitStatus({
                     phase: 'attempt_failed', stage, attempt, maxAttempts: this.connectAttempts,
@@ -86,6 +97,8 @@
                 error.bleStage = stage;
                 error.bleAttempt = attempt;
                 throw error;
+            } finally {
+                clearTimeout(timer);
             }
         }
 
@@ -119,6 +132,8 @@
                     return this;
                 } catch (error) {
                     lastError = error;
+                    // A timed-out browser operation may still be pending. Avoid overlapping it with another attempt.
+                    if (error.code === 'BLE_GATT_TIMEOUT') break;
                     if (attempt < this.connectAttempts) {
                         await new Promise(resolve => setTimeout(resolve, this.connectRetryDelayMs * attempt));
                     }
@@ -126,10 +141,11 @@
             }
             const stage = lastError?.bleStage || 'gatt_connect';
             const message = lastError?.message || String(lastError || 'Unknown BLE error');
-            throw Object.assign(new Error(`BrainLume BLE 连接失败（阶段 ${stage}，已尝试 ${this.connectAttempts} 次）：${message}`), {
-                code: 'BLE_CONNECT_RETRIES_EXHAUSTED',
+            const attempts = lastError?.bleAttempt || this.connectAttempts;
+            throw Object.assign(new Error(`BrainLume BLE 连接失败（阶段 ${stage}，已尝试 ${attempts} 次）：${message}`), {
+                code: lastError?.code === 'BLE_GATT_TIMEOUT' ? lastError.code : 'BLE_CONNECT_RETRIES_EXHAUSTED',
                 bleStage: stage,
-                attempts: this.connectAttempts,
+                attempts,
                 cause: lastError,
             });
         }

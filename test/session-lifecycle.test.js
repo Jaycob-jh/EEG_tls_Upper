@@ -54,7 +54,7 @@ test('failed impedance stop does not reconfigure a device that may still be samp
     const client={readAds1299Registers:async()=>({values:[]}),startEeg:async()=>{throw Error('measurement failed');}};
     const elements=new Map();const $=id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id);};
     const context=vm.createContext({state,$,setTimeout,clearTimeout,requireClient:()=>client,
-        applyChannel:async(_channel,impedance)=>{writes.push(impedance);return [];},
+        applyChannel:async(_channel,impedance)=>{writes.push(impedance);return { readback: [] };},
         SDK:{ads1299:{compareAdsConfig:()=>[]},impedance:{ImpedanceEstimator:class {}}},
         stopEegOnDevice:async()=>{throw Error('stop not confirmed');},
         audit:async()=>{},renderNextAction(){},logProtocol(){},updateEegUi(){},Core:{bytesToHex:()=>''},
@@ -70,7 +70,7 @@ test('impedance cleanup distinguishes failed restoration from an unconfirmed sto
     const elements=new Map();const $=id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id);};
     const context=vm.createContext({state,$,setTimeout,clearTimeout,
         requireClient:()=>client,
-        applyChannel:async(_channel,impedance)=>{if(!impedance)throw Error('restore rejected');return [];},
+        applyChannel:async(_channel,impedance)=>{if(!impedance)throw Error('restore rejected');return { readback: [] };},
         SDK:{ads1299:{compareAdsConfig:()=>[]},impedance:{ImpedanceEstimator:class {}}},
         stopEegOnDevice:async()=>{state.deviceEegRunning=false;},
         audit:async()=>{},renderNextAction(){},logProtocol(){},updateEegUi(){},Core:{bytesToHex:()=>''},
@@ -98,12 +98,38 @@ test('a complete saturated impedance window is reported as an unusable signal ra
     const elements=new Map();const $=id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id);};
     const context=vm.createContext({state,$,setTimeout:(fn,delay)=>delay===8000?setTimeout(fn,0):setTimeout(fn,0),clearTimeout,
         requireClient:()=>({readAds1299Registers:async()=>({values:[]}),startEeg:async()=>{Object.assign(state.impedanceDiagnostics,{received:1248,saturated:1248,windows:225,lastKohm:0});}}),
-        applyChannel:async()=>[],SDK:{ads1299:{compareAdsConfig:()=>[]},impedance:{ImpedanceEstimator:class {}}},
+        applyChannel:async()=>({ readback: [] }),SDK:{ads1299:{compareAdsConfig:()=>[]},impedance:{ImpedanceEstimator:class {}}},
         stopEegOnDevice:async()=>{},audit:async()=>{},renderNextAction(){},logProtocol(){},updateEegUi(){},Core:{bytesToHex:()=>''},
     });
     vm.runInContext(extract('    function cancelImpedanceMeasurement(', '    const LIGHT_MAX_ATTEMPTS'),context);
     await assert.rejects(context.measureImpedance(),/阻抗信号超出设备量程/);
     assert.equal(state.impedanceMode,false);assert.equal(state.impedanceBusy,false);
+});
+
+test('impedance keeps waiting when the total exceeds 1024 but the valid run is incomplete', async () => {
+    const state = { eegRunning: false, selectedChannel: 2, processor: { reset() {} } };
+    const client = {
+        readAds1299Registers: async () => assert.fail('Impedance must reuse the verified channel readback'),
+        startEeg: async () => Object.assign(state.impedanceDiagnostics, { received: 1095, longestCleanRun: 553 }),
+    };
+    const waits = [];
+    const context = vm.createContext({
+        state, $: () => ({}), requireClient: () => client, clearTimeout,
+        setTimeout: (callback, ms) => {
+            waits.push(ms);
+            return setTimeout(() => {
+                if (ms === 2000) state.impedanceWaiter?.(55.5);
+                else callback();
+            }, 0);
+        },
+        applyChannel: async () => ({ readback: [] }),
+        SDK: { ads1299: { compareAdsConfig: () => [] }, impedance: { ImpedanceEstimator: class {} } },
+        Core: { bytesToHex: () => '' }, stopEegOnDevice: async () => {}, audit: async () => {},
+        renderNextAction() {}, logProtocol() {}, updateEegUi() {}, addActivity() {},
+    });
+    vm.runInContext(extract('    function cancelImpedanceMeasurement(', '    const LIGHT_MAX_ATTEMPTS'), context);
+    assert.equal(await context.measureImpedance(), 55.5);
+    assert.deepEqual(waits, [8000, 2000, 150]);
 });
 
 test('battery refresh during EEG uses an explicitly labelled previous reading and sends no device command', async () => {
