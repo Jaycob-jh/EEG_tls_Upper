@@ -255,8 +255,9 @@
                 if (this.buffer.length < 6) break;
                 const total = 8 + this.buffer[5];
                 if (this.buffer.length < total) {
-                    // Recover only at a complete CRC-verified boundary; a header
-                    // by itself can occur inside a fragmented EEG payload.
+                    // Only look ahead when the header declares an impossible EEG length.
+                    // A valid frame can contain a complete frame-shaped sequence in its payload.
+                    if (this.buffer[3] !== FUNC.EEG_RAW || this.buffer[5] === 29) break;
                     let recovered = -1;
                     for (let i = 1; i + 8 <= this.buffer.length; i++) {
                         if (this.buffer[i] !== HEADER_A || this.buffer[i + 1] !== HEADER_B) continue;

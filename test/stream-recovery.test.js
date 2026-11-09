@@ -24,6 +24,17 @@ test('all split positions preserve valid frames, including an embedded header', 
     }
 });
 
+test('a complete frame-shaped byte sequence inside fragmented EEG stays payload', () => {
+    const embedded = SDK.protocol.buildFrame(1, 0x01, 0, []);
+    const payload = new Uint8Array(29);
+    payload.set(embedded, 8);
+    const eeg = SDK.protocol.buildFrame(1, 0x22, 1, payload);
+    const split = 6 + 8 + embedded.length;
+    const parser = new SDK.protocol.ActionBusParser();
+    assert.deepEqual(parser.feed(eeg.slice(0, split)), []);
+    assert.deepEqual(parser.feed(eeg.slice(split)).map(frame => frame.raw), [eeg]);
+});
+
 test('CRC-corrupted EEG never enters the received frame list', () => {
     const good = SDK.protocol.buildFrame(1, 0x22, 0, new Uint8Array(29));
     const bad = good.slice(); bad[10] ^= 1;
