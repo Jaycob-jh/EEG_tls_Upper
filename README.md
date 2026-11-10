@@ -5,9 +5,20 @@ EEG CH2；工程调试页仍允许在 CH1~CH8 中选择测试通道。这里的 
 由两枚互为参考的电极测量电位差，并不是只有一枚电极。应用覆盖 BLE 连接、设备能力发现、ADS1299 配置、脑电波形、
 阻抗检测、两路光刺激、方案定时执行、完整原始 EDF 和操作日志。
 
+## 下载
+
+| 平台 | 当前测试版 |
+| --- | --- |
+| macOS（Apple Silicon） | [下载 0.7.0 ZIP](https://github.com/Jaycob-jh/EEG_tls_Upper/releases/download/v0.7.0/CaoCao-macos-arm64-v0.7.0.zip) |
+| Windows 10/11（x64） | [下载 0.7.0 ZIP](https://github.com/Jaycob-jh/EEG_tls_Upper/releases/download/v0.7.0/CaoCao-windows-x64-v0.7.0.zip) |
+
+[查看所有版本和校验值](https://github.com/Jaycob-jh/EEG_tls_Upper/releases)。解压后打开应用。
+
+维护者提交版本号后，推送同版本的 Git 标签（如 `v0.7.0`），GitHub Actions 会测试并构建两个平台。两个包齐备后才发布测试版，并附 SHA-256 校验值。完成真机验证后，可在 GitHub Release 页面将对应版本改为正式版。
+
 ## 当前版本
 
-- 桌面源码版本：`0.6.1`；当前修复将 0.5 与 0.6 的设置、浏览器存储和记录目录隔离，Android 保持原版本。
+- 桌面源码版本：`0.7.0`。各桌面版本系列使用独立的设置和记录目录，Android 保持原版本。
 - v0.6.0 的变化与限制见 [发布说明](RELEASE_NOTES_v0.6.0.md)。旧定时方案已停用。
 - BrainLume SDK：`1.0.3`
 - 框架：Electron + 原生 HTML/CSS/JavaScript
