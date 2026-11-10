@@ -5,6 +5,15 @@ EEG CH2；工程调试页仍允许在 CH1~CH8 中选择测试通道。这里的 
 由两枚互为参考的电极测量电位差，并不是只有一枚电极。应用覆盖 BLE 连接、设备能力发现、ADS1299 配置、脑电波形、
 阻抗检测、两路光刺激、方案定时执行、完整原始 EDF 和操作日志。
 
+## 下载
+
+| 平台 | 曹操 0.7.0 测试版 |
+| --- | --- |
+| macOS（Apple Silicon） | [一键下载 ZIP](https://github.com/Jaycob-jh/EEG_tls_Upper/releases/download/v0.7.0/CaoCao-macos-arm64-v0.7.0.zip) |
+| Windows 10/11（x64） | [一键下载 ZIP](https://github.com/Jaycob-jh/EEG_tls_Upper/releases/download/v0.7.0/CaoCao-windows-x64-v0.7.0.zip) |
+
+解压后打开应用。[查看全部版本](https://github.com/Jaycob-jh/EEG_tls_Upper/releases) · [查看 0.7.0 源码](https://github.com/Jaycob-jh/EEG_tls_Upper/tree/v0.7.0)
+
 ## 当前版本
 
 - 桌面源码版本：`0.6.1`；当前修复将 0.5 与 0.6 的设置、浏览器存储和记录目录隔离，Android 保持原版本。
