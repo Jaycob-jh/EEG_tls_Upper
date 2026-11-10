@@ -1,0 +1,93 @@
+name: Release desktop apps
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: macos-arm64
+            script: package:mac:arm64
+          - runner: windows-2022
+            platform: windows-x64
+            script: package:win:x64
+    runs-on: ${{ matrix.runner }}
+    env:
+      ARCHIVE: CaoCao-${{ matrix.platform }}-${{ github.ref_name }}.zip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Verify release tag
+        run: node -e "if ('v' + require('./package.json').version !== process.env.GITHUB_REF_NAME) throw Error('Tag does not match package.json')"
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run ${{ matrix.script }}
+      - name: Verify and archive macOS app
+        if: runner.os == 'macOS'
+        run: |
+          app="dist/曹操-darwin-arm64/曹操.app"
+          lipo -verify_arch arm64 "$app/Contents/MacOS/曹操"
+          codesign --verify --deep --strict "$app"
+          test ! -d "$app/Contents/Resources/app/data/edf"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$ARCHIVE"
+      - name: Verify and archive Windows app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $source = 'dist/曹操-win32-x64'
+          if (!(Test-Path -LiteralPath "$source/曹操.exe")) { throw 'Missing Windows executable' }
+          if (Test-Path -LiteralPath "$source/resources/app/data/edf") { throw 'Unexpected EEG records' }
+          Compress-Archive -Path "$source/*" -DestinationPath $env:ARCHIVE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Publish both verified packages together
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          mac="CaoCao-macos-arm64-$tag.zip"
+          win="CaoCao-windows-x64-$tag.zip"
+          test -s "$mac" && test -s "$win"
+          sha256sum "$mac" "$win" > SHA256SUMS.txt
+          base="https://github.com/$GH_REPO/releases/download/$tag"
+          cat > notes.md <<NOTES
+          - [下载 macOS（Apple Silicon）]($base/$mac)
+          - [下载 Windows（x64）]($base/$win)
+          - [SHA-256 校验值]($base/SHA256SUMS.txt)
+
+          解压后打开曹操。macOS 包使用临时签名，未经 Apple 公证。可选的 YASA / AnySleep 可能需要单独配置 Python 环境。
+          两个平台均通过构建和自动测试，真机蓝牙与光照仍需验证。
+          NOTES
+          gh release create "$tag" "$mac" "$win" SHA256SUMS.txt \
+            --verify-tag --prerelease --title "曹操 $tag 测试版" --notes-file notes.md
