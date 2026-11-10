@@ -20,6 +20,7 @@ function harness(overrides={}) {
         disableSleepStimulus:async()=>{state.sleepStimulusProtocol.enabled=false},
     });
     vm.runInContext(source.slice(source.indexOf('    function renderSimpleWorkflow('),source.indexOf('    function updateConnectionUi(')),context);
+    vm.runInContext(source.slice(source.indexOf('    function sleepStimulusTriggerSummary('),source.indexOf('    function renderStimulusModeCard(')),context);
     return {state,context,elements};
 }
 
@@ -81,4 +82,13 @@ test('manual selection survives stopping, requires no EEG, and automatic selecti
     assert.deepEqual(state.sleepStimulusProtocol.targetStages,['N2','REM']);
     state.sleepStimulusProtocol.enabled=true;context.preferLightMode('manual');
     assert.equal(context.selectedLightMode(),'automatic');
+});
+
+test('home automatic light card shows the saved probability and consecutive count while off',()=>{
+    const {state,context,elements}=harness({connected:true,eegRunning:true});
+    Object.assign(state.sleepStimulusProtocol,{n3TriggerMode:'probability',minN3Probability:.6,consecutiveEpochs:5});
+    context.renderSimpleWorkflow();
+    assert.match(elements.get('simple-n3-parameters').textContent,/N3 概率 ≥ 60%.*连续 5 段/);
+    assert.equal(elements.get('simple-n3-status').textContent,'自动光照未开启');
+    assert.equal(elements.get('simple-n3-toggle').textContent,'开启自动光照');
 });

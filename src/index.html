@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>曹操 v0.6.1</title>
+    <title>曹操 v0.7.0</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -52,10 +52,7 @@
                     <article class="metric"><span>采集时长</span><strong id="metric-recording">00:00</strong><small id="metric-recording-detail">0 原始样本 · 250 Hz</small></article>
                     <article class="metric"><span>阻抗</span><strong id="metric-impedance">-- kΩ</strong><small id="metric-impedance-state">尚未检测</small></article>
                     <article class="metric"><span>电量</span><strong id="metric-battery">--%</strong><small id="metric-battery-update">尚未查询</small></article>
-                    <article class="metric"><span>当前帧率</span><strong id="metric-frame-rate">0.0 FPS</strong><small>最近 2 秒</small></article>
                     <article class="metric"><span>断档次数</span><strong id="metric-gap-events">0</strong><small>序号缺口事件</small></article>
-                    <article class="metric"><span>累计丢帧</span><strong id="metric-lost-frames">0</strong><small>缺失帧总数</small></article>
-                    <article class="metric"><span>丢帧率</span><strong id="metric-loss-rate">0.00%</strong><small>接收帧与缺失帧</small></article>
                 </div>
                 </details>
 
@@ -74,7 +71,7 @@
                             <section class="wave-stream-card processed">
                                 <div class="wave-stream-heading"><strong>脑电波形</strong><small>已过滤部分干扰，原始数据另行保存</small></div>
                                 <div class="wave-canvas-wrap"><canvas id="eeg-canvas"></canvas><div class="wave-empty" id="wave-empty">开始采集后显示波形</div></div>
-                                <div class="wave-footer"><span id="wave-range">尚未采集</span><span id="wave-value" title="当前滤波后的数值">0.00 µV</span><span id="wave-peak-to-peak" title="当前显示窗口内，滤波后的最大值减最小值，按纵轴压缩前的样本计算">峰峰值 --</span><span id="wave-saturation" title="当前窗口内，原始值达到设备量程 99% 的样本比例">原始饱和 --</span></div>
+                                <div class="wave-footer"><span id="wave-range">尚未采集</span><span id="wave-value" title="当前滤波后的数值">0.00 µV</span><span id="wave-peak-to-peak" title="当前显示窗口内，滤波后的最大值减最小值，按纵轴压缩前的样本计算">峰峰值 --</span><span id="wave-saturation" title="当前窗口内，原始值达到设备量程 99% 的样本比例">原始饱和 --</span><span title="最近 2 秒">当前帧率 <strong id="metric-frame-rate">0.0 FPS</strong></span><span title="缺失帧总数">累计丢帧 <strong id="metric-lost-frames">0</strong></span><span title="接收帧与缺失帧">丢帧率 <strong id="metric-loss-rate">0.00%</strong></span></div>
                             </section>
                         </div>
                     </section>
@@ -131,6 +128,10 @@
                     <div class="section-heading compact"><div><p class="eyebrow">STAGE PROBABILITY</p><h3>各睡眠阶段的可能性</h3></div><small id="probability-result-note">等待首个分期结果</small></div>
                     <div class="stage-probabilities" id="realtime-probabilities"></div>
                     <p class="probability-caption">模型估计，仅供研究参考；信号异常时不作判断。</p>
+                    <details class="optional-panel"><summary>N3 双路对照（模拟）</summary>
+                        <p id="realtime-n3-vote">等待实时结果</p>
+                        <p class="probability-caption">CNN 分数至少 50%，慢波频带功率占比至少 50%，连续满足 4 段才记一次模拟命中。阈值仅供实验，模拟命中不会开灯。</p>
+                    </details>
                 </section>
                 <section class="analysis-section realtime-history-section">
                     <div class="section-heading compact"><div><p class="eyebrow">STAGING HISTORY</p><h3>本次分期</h3><small class="page-heading-note">实时分期可用于自动光照；回看结果只供查看。</small></div><label class="history-mode-select">查看<select id="realtime-history-mode"><option value="causal">实时分期</option><option value="center">回看 5 分钟前</option></select></label></div>
@@ -376,7 +377,7 @@
                             <label id="sleep-stimulus-n3-probability-field" title="设置开灯条件">N3 概率至少 (%)<input id="sleep-stimulus-n3-probability" type="number" min="50" max="100" step="1" value="" placeholder="读取中"></label>
                             <label id="sleep-stimulus-n3-confidence-field">检查后 N3 概率至少 (%)<input id="sleep-stimulus-n3-confidence" type="number" min="50" max="100" step="1" value="80"></label>
                             <label id="sleep-stimulus-other-confidence-field"><span id="sleep-stimulus-other-confidence-label">其他分期概率至少 (%)</span><input id="sleep-stimulus-other-confidence" type="number" min="50" max="100" step="1" value="80"><small class="sleep-stimulus-field-help" id="sleep-stimulus-other-confidence-help">用于 W、N1、N2、REM；N3 使用自己的阈值。</small></label>
-                            <label>连续满足几次<input id="sleep-stimulus-consecutive" type="number" min="1" max="15" step="1" value="2"><small class="sleep-stimulus-field-help">每次 30 秒；15 次约 7 分 30 秒。</small></label>
+                            <label>连续满足几次<input id="sleep-stimulus-consecutive" type="number" min="1" max="15" step="1" value="2" aria-describedby="sleep-stimulus-consecutive-help"><small id="sleep-stimulus-consecutive-help" class="sleep-stimulus-field-help">每段 30 秒</small></label>
                         </div>
                     </fieldset>
                     <fieldset class="sleep-stimulus-group">

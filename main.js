@@ -6,7 +6,7 @@ const fsp = fs.promises;
 const path = require('node:path');
 const crypto = require('node:crypto');
 const os = require('node:os');
-const { spawn } = require('node:child_process');
+const { execFile, spawn } = require('node:child_process');
 const { Worker } = require('node:worker_threads');
 const Core = require('./src/core');
 const AnalysisReport = require('./src/analysis-report');
@@ -1557,7 +1557,61 @@ async function exportAnalysisReport(analysisId) {
     return { pdfPath, dataDirectory };
 }
 
+// Only the local development bundle carries this marker. The renderer
+// can request a check or restart, but cannot choose what executable runs.
+function registerLocalUpdate() {
+    if (process.platform !== 'darwin' || !app.isPackaged || debugCliMode || deviceDiagnosticMode) return false;
+    let launcher;
+    try {
+        const marker = path.join(process.resourcesPath, 'caocao-local-update.json');
+        launcher = JSON.parse(fs.readFileSync(marker, 'utf8')).launcher;
+        if (typeof launcher !== 'string' || !path.isAbsolute(launcher)) return false;
+    } catch { return false; }
+
+    let pending = false;
+    let restarting = false;
+    const canUpdate = event => event.sender === mainWindow?.webContents
+        && !analysisWindow && !activeAnalyses.size && !activeRecordings.size
+        && !historyReplay.running && !githubUploadProcessPromise;
+
+    ipcMain.handle('local-update:check', event => {
+        if (!canUpdate(event) || restarting) return false;
+        return new Promise(resolve => {
+            execFile(launcher, ['--check-only'], { timeout: 10_000 }, (error, output) => {
+                pending = !error && output.trim() === 'pending';
+                resolve(pending && canUpdate(event));
+            });
+        });
+    });
+    ipcMain.handle('local-update:restart', async event => {
+        if (!pending || restarting || !canUpdate(event)) return false;
+        restarting = true;
+        try {
+            await new Promise((resolve, reject) => {
+                const child = spawn(launcher, ['--wait-for-pid', String(process.pid)], {
+                    detached: true, stdio: 'ignore',
+                });
+                child.once('error', reject);
+                child.once('spawn', () => { child.unref(); resolve(); });
+            });
+        } catch (error) {
+            restarting = false;
+            console.error('无法启动本机更新程序', error.message);
+            return false;
+        }
+        if (!canUpdate(event)) {
+            restarting = false;
+            return false;
+        }
+        setTimeout(() => app.quit(), 100);
+        return true;
+    });
+    return true;
+}
+
 function registerIpc() {
+    const localUpdateAvailable = registerLocalUpdate();
+    ipcMain.on('local-update:available', event => { event.returnValue = localUpdateAvailable; });
     ipcMain.on('ble:select-device', (_event, id) => {
         completeBluetoothSelection(id);
     });

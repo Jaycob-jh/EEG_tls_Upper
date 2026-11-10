@@ -3,6 +3,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('desktopAPI', {
+    hasLocalUpdate: () => ipcRenderer.sendSync('local-update:available'),
+    checkLocalUpdate: () => ipcRenderer.invoke('local-update:check'),
+    restartForLocalUpdate: () => ipcRenderer.invoke('local-update:restart'),
     getLaunchMode: () => ipcRenderer.sendSync('launch:get-mode'),
     getDebugRequest: () => ipcRenderer.sendSync('debug:get-request'),
     sendDebugResult: result => ipcRenderer.invoke('debug:result', result),

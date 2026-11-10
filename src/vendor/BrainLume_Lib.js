@@ -240,7 +240,7 @@
      * 4. 帧损坏时只丢一个字节，再次搜索帧头，避免把后续正常帧一起丢弃。
      */
     class ActionBusParser {
-        constructor(options = {}) { this.buffer = []; this.onError = typeof options.onError === 'function' ? options.onError : null; }
+        constructor(options = {}) { this.buffer = []; this.recoverIncomplete = options.recoverIncomplete !== false; this.onError = typeof options.onError === 'function' ? options.onError : null; }
         reset() { this.buffer.length = 0; }
         feed(chunk) {
             this.buffer.push(...toBytes(chunk, 'chunk'));
@@ -257,7 +257,7 @@
                 if (this.buffer.length < total) {
                     // Only look ahead when the header declares an impossible EEG length.
                     // A valid frame can contain a complete frame-shaped sequence in its payload.
-                    if (this.buffer[3] !== FUNC.EEG_RAW || this.buffer[5] === 29) break;
+                    if (!this.recoverIncomplete || this.buffer[3] !== FUNC.EEG_RAW || this.buffer[5] === 29) break;
                     let recovered = -1;
                     for (let i = 1; i + 8 <= this.buffer.length; i++) {
                         if (this.buffer[i] !== HEADER_A || this.buffer[i + 1] !== HEADER_B) continue;
@@ -947,7 +947,7 @@
     class BrainLumeClient extends EventEmitter {
         constructor(options = {}) {
             super(); this.address = assertByte(options.address ?? 1, 'address'); this.timeoutMs = assertInteger(options.timeoutMs ?? 1000, 1, 600000, 'timeoutMs');
-            this.transport = options.transport || null; this.parser = new ActionBusParser({ onError: error => this.emit('error', error) }); this.pending = null; this.queue = Promise.resolve();
+            this.transport = options.transport || null; this.parser = new ActionBusParser({ recoverIncomplete: options.recoverIncomplete, onError: error => this.emit('error', error) }); this.pending = null; this.queue = Promise.resolve();
             this.eegProcessor = options.eegProcessor === false ? null : (options.eegProcessor instanceof EegProcessor ? options.eegProcessor : new EegProcessor(options.eeg || {})); this.unsubscribe = null; this._attach();
         }
         /** 连接 Transport 的接收回调；若调用方没有 onData，也可以手动调用 feed()。 */

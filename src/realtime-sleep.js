@@ -631,6 +631,53 @@
         }
     }
 
+    // Experimental shadow comparison. The slow-wave vote is a relative-power
+    // heuristic, not a trained classifier or a calibrated N3 probability.
+    const N3_VOTE_PROFILE = Object.freeze({
+        id: 'n3-cnn-delta-v1',
+        minN3Probability: 0.5,
+        minDeltaRatio: 0.5,
+        consecutiveEpochs: 4,
+        cooldownMinutes: 30,
+    });
+
+    class N3VoteTrial {
+        constructor() {
+            const protocol = { ...N3_VOTE_PROFILE, enabled: true, shadowMode: true,
+                targetStages: ['N3'], n3TriggerMode: 'probability' };
+            this.cnnGate = new SleepStageStimulusGate(protocol);
+            this.voteGate = new SleepStageStimulusGate(protocol);
+        }
+
+        reset() {
+            this.cnnGate.reset();
+            this.voteGate.reset();
+        }
+
+        evaluate(row, nowMs) {
+            if (row.inferenceMode && row.inferenceMode !== 'causal') return null;
+            const n3 = row.probabilities?.[3];
+            const delta = row.quality?.deltaRatio;
+            const cnnSupports = Number.isFinite(n3) && n3 >= N3_VOTE_PROFILE.minN3Probability
+                && (row.candidateStage === 'N3' || row.stage === 'N3');
+            const slowWaveSupports = Number.isFinite(delta) && delta >= N3_VOTE_PROFILE.minDeltaRatio;
+            const blocked = row.skipped ? 'missing_data'
+                : row.lightChannels?.length ? 'light_on'
+                    : row.stimulusControlEligible !== true || row.quality?.ok !== true ? 'control_ineligible'
+                        : !Number.isFinite(n3) ? 'cnn_unavailable' : null;
+            const cnn = blocked ? this.cnnGate.reject(blocked) : this.cnnGate.evaluate(row, nowMs);
+            const vote = blocked || !slowWaveSupports
+                ? this.voteGate.reject(blocked || (Number.isFinite(delta) ? 'slow_wave_low' : 'slow_wave_unavailable'))
+                : this.voteGate.evaluate(row, nowMs);
+            return {
+                profile: N3_VOTE_PROFILE.id, cnnSupports, slowWaveSupports,
+                n3Probability: Number.isFinite(n3) ? n3 : null,
+                deltaRatio: Number.isFinite(delta) ? delta : null,
+                cnn, vote, hardwareCommandsSent: 0,
+            };
+        }
+    }
+
     return Object.freeze({
         STAGES,
         DEFAULT_EEG_QUALITY_PROFILE,
@@ -641,6 +688,8 @@
         SleepStageSmoother,
         lightStimulusPresentation,
         SleepStageStimulusGate,
+        N3_VOTE_PROFILE,
+        N3VoteTrial,
         resampleLinear,
         resampleForRate,
         qualityMetrics,

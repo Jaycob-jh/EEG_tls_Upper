@@ -16,6 +16,7 @@
             this.uuids = { ...UUID, ...(options.uuids || {}) };
             this.reuseGrantedDevice = Boolean(options.reuseGrantedDevice);
             this.requireGrantedDevice = Boolean(options.requireGrantedDevice);
+            this.legacyGatt = options.legacyGatt === true;
             this.connectTimeoutMs = Math.max(1, Number(options.connectTimeoutMs) || 12000);
             this.connectAttempts = Math.max(1, Number(options.connectAttempts) || 3);
             this.connectRetryDelayMs = Math.max(250, Number(options.connectRetryDelayMs) || 1000);
@@ -64,12 +65,12 @@
         async _connectGattOnce(attempt) {
             let stage = 'gatt_connect';
             let timer;
-            const deadline = new Promise((_, reject) => {
+            const deadline = this.legacyGatt ? null : new Promise((_, reject) => {
                 timer = setTimeout(() => reject(Object.assign(new Error('系统蓝牙操作超时，请重新选择设备'), {
                     code: 'BLE_GATT_TIMEOUT',
                 })), this.connectTimeoutMs);
             });
-            const beforeDeadline = operation => Promise.race([operation, deadline]);
+            const beforeDeadline = operation => deadline ? Promise.race([operation, deadline]) : operation;
             try {
                 this.server = await beforeDeadline(this.device.gatt.connect());
                 stage = 'service_discovery';

@@ -101,6 +101,7 @@
         stimulusControlMode: Core.normalizeStimulusControlMode(localStorage.getItem('stimulusControlMode')),
         preferredLightMode: localStorage.getItem('preferredLightMode') === 'manual' ? 'manual' : 'automatic',
         sleepStimulusGate: null,
+        n3VoteTrial: new Sleep.N3VoteTrial(),
         sleepStimulusStopTimer: null,
         sleepStimulusActiveChannel: null,
         sleepEpochLightChannels: new Set(),
@@ -320,7 +321,7 @@
         $('simple-n3-status').textContent = manual ? '手动光照中' : emitting ? '正在光照' : !armed ? '自动光照未开启' : p.shadowMode ? '试运行 · 不发光' : `已开启 · 等待 ${targets}`;
         const lightDuration = p.durationSeconds < 60 ? `${p.durationSeconds} 秒`
             : `${Math.floor(p.durationSeconds / 60)} 分${p.durationSeconds % 60 ? ` ${p.durationSeconds % 60} 秒` : '钟'}`;
-        $('simple-n3-parameters').textContent = `目标 ${targets} · ${p.lightChannel === 3 ? '两个光源' : `光源${p.lightChannel}`} · ${p.frequencyHz} Hz · ${p.powerPercent}% · 每次 ${lightDuration}`;
+        $('simple-n3-parameters').textContent = `${sleepStimulusTriggerSummary(p)} · ${p.lightChannel === 3 ? '两个光源' : `光源${p.lightChannel}`} · ${p.frequencyHz} Hz · ${p.powerPercent}% · 每次 ${lightDuration}`;
         if (manual) $('simple-n3-parameters').textContent = `${state.manualLightChannel === 3 ? '两个光源' : `光源${state.manualLightChannel}`} · ${state.manualLightUntil ? `剩余 ${Math.max(0, Math.ceil((state.manualLightUntil - Date.now()) / 1000))} 秒 · ` : ''}自动触发未开启`;
         else if (emitting) $('simple-n3-parameters').textContent = state.sleepStimulusActiveChannel ? '分期触发光照中' : '设备正在光照，可在实时状态查看详情';
         if (manualView && !manual && !emitting) {
@@ -445,7 +446,7 @@
                 : `N3 概率 ≥ ${Math.round(protocol.minN3Probability * 100)}%`);
         }
         if (otherTargets.length) parts.push(`${otherTargets.join('、')} 概率 ≥ ${Math.round(protocol.minConfidence * 100)}%`);
-        const targetLabel = targets.length ? targets.join('/') : '未选择目标';
+        const targetLabel = targets.length ? targets.join(' / ') : '未选择目标';
         return `目标 ${targetLabel} · ${parts.join(' · ') || '请先选择触发条件'} · 连续 ${protocol.consecutiveEpochs || 0} 段`;
     }
 
@@ -704,6 +705,8 @@
         state.sleepPipeline?.reset();
         state.liveQuality = null;
         state.livePrediction = null;
+        state.n3VoteTrial.reset();
+        $('realtime-n3-vote').textContent = '等待实时结果';
         state.badSignalEpochs = 0;
         if ($('realtime-health-hint')) $('realtime-health-hint').hidden = true;
         state.sleepModelFilter?.reset();
@@ -731,7 +734,7 @@
         $('realtime-history').innerHTML = rows.length ? rows.map(item => `<tr>
             <td>${escapeHtml(item.outputTime)}</td><td>${item.epochIndex + 1}</td><td title="${item.inferenceMode === 'causal' ? '实时判断，可用于自动光照' : '利用后续数据判断约 5 分钟前，只供查看'}"><span class="state-badge ${item.quality.ok && item.stage !== (SleepPostprocess?.UNKNOWN_STAGE || 'UNKNOWN') ? '' : 'off'}">${escapeHtml(sleepStagePresentation(item))}</span><small class="stage-source">${escapeHtml(sleepStagePresentationDetail(item))}</small></td>
             <td>${sleepHistoryProbability(item)}</td><td>${item.quality.ok ? '正常' : signalReasonLabel(item.quality.reason)}</td>
-            <td>${item.inferenceMode === 'center' ? '只供查看' : item.stimulusShadow ? '试运行达标，未开灯' : (item.lightChannels?.length ? `CH${item.lightChannels.join('、CH')} 开启` : '关闭')}</td>
+            <td>${item.inferenceMode === 'center' ? '只供查看' : item.stimulusShadow ? '试运行达标，未开灯' : (item.lightChannels?.length ? `CH${item.lightChannels.join('、CH')} 开启` : '关闭')}${item.n3VoteTrial?.vote.triggered ? '<small class="stage-source">N3 双路模拟命中</small>' : ''}</td>
         </tr>`).join('') : '<tr><td colspan="6">尚无此类分期结果</td></tr>';
     }
 
@@ -792,6 +795,11 @@
     }
 
     function renderSleepStimulusTriggerFields(protocol = null) {
+        const count = protocol?.consecutiveEpochs ?? Number($('sleep-stimulus-consecutive').value);
+        const countHelp = $('sleep-stimulus-consecutive-help');
+        if (countHelp) countHelp.textContent = Number.isInteger(count) && count >= 1 && count <= 15
+            ? `每段 30 秒 · 连续 ${count} 段约 ${count / 2} 分钟`
+            : '每段 30 秒 · 可填 1 到 15 段';
         const selectedStages = protocol
             ? protocol.targetStages
             : [
@@ -1152,6 +1160,15 @@
             };
             state.sleepHistory.unshift(item);
             if (inferenceMode === 'causal') {
+                item.n3VoteTrial = state.n3VoteTrial.evaluate(item, input.observedAt ?? Date.now());
+                const { cnn, vote, cnnSupports, slowWaveSupports, n3Probability, deltaRatio } = item.n3VoteTrial;
+                const progress = vote.triggered ? '双路模拟命中'
+                    : vote.reason === 'awaiting_consecutive' ? `双路连续满足 ${vote.matchedCount} / ${vote.requiredCount}`
+                        : ({ control_ineligible: '等待连续合格数据', light_on: '光照期间暂停对照',
+                            cooldown: '等待下一次模拟触发', stimulus_active: '等待下一次模拟触发' })[vote.reason] || '双路尚未达标';
+                const voteLabel = (value, supports) => value == null
+                    ? '无数据' : `${(value * 100).toFixed(1)}% ${supports ? '支持' : '未达标'}`;
+                $('realtime-n3-vote').textContent = `CNN ${voteLabel(n3Probability, cnnSupports)} · 慢波 ${voteLabel(deltaRatio, slowWaveSupports)} · ${progress}${cnn.triggered ? ' · CNN 单独模拟命中' : ''}`;
                 state.livePrediction = { ...item, receivedAt: Date.now() };
                 renderLiveStatus();
             }
@@ -1182,6 +1199,7 @@
                 probabilityMargin: smoothed.margin, quality: targetQuality,
                 outputIndex: result.selectedOutputIndex, historyEpochs: input.historyEpochs,
                 lightChannels: item.lightChannels, inferenceMode,
+                n3VoteTrial: item.n3VoteTrial,
                 modelDelaySeconds: delaySeconds, controlEligible: item.controlEligible,
                 stimulusControlEligible: item.stimulusControlEligible,
                 stimulusControlEligibilityReason: item.stimulusControlEligibilityReason,
@@ -1243,6 +1261,7 @@
         $('realtime-quality-detail').textContent = `${amplitudeDetail} · SD ${epoch.quality.stdUv.toFixed(2)} µV · P-P ${epoch.quality.peakToPeakUv.toFixed(1)} µV${deltaDetail}${gapDetail}`;
         if (epoch.gapSamples) {
             state.sleepEpochLightChannels.clear();
+            $('realtime-n3-vote').textContent = '本段有丢帧，暂停对照';
             $('realtime-inference-state').textContent = `检测到序列缺口，跳过第 ${epoch.totalEpochs} 段`;
             return;
         }
@@ -1262,6 +1281,7 @@
         }
         if (causalInput) {
             causalInput.lightChannels = lightChannels;
+            causalInput.observedAt = Date.now();
             state.sleepInferencePromise = state.sleepInferencePromise
                 .then(() => inferSleepEpoch(causalInput, generation));
         }
@@ -1312,6 +1332,7 @@
             $('sleep-stimulus-settings-dialog').close();
             toast(protocol.enabled ? '参数已保存，将用于后续触发。' : '参数已保存，自动光照尚未开启。');
         }));
+        $('sleep-stimulus-consecutive').addEventListener('input', () => renderSleepStimulusTriggerFields());
         $('sleep-stimulus-config').addEventListener('input', () => {
             $('sleep-settings-feedback').dataset.error = 'false';
             $('sleep-settings-feedback').textContent = '有未保存的修改';
@@ -1361,6 +1382,7 @@
         try {
             const transport = new BleTransport({
                 reuseGrantedDevice: false,
+                legacyGatt: /^Mac/.test(navigator.platform),
                 connectAttempts: BLE_CONNECT_ATTEMPTS,
                 connectRetryDelayMs: BLE_CONNECT_RETRY_DELAY_MS,
             });
@@ -1396,7 +1418,7 @@
                 implementation: 'direct2t',
             });
             if (!sleepModelFilter.supported) throw new Error('睡眠模型训练滤波器初始化失败');
-            const client = new SDK.BrainLumeClient({ transport, address: 0x01, timeoutMs: 2000, eegProcessor: processor });
+            const client = new SDK.BrainLumeClient({ transport, address: 0x01, timeoutMs: 2000, eegProcessor: processor, recoverIncomplete: !transport.legacyGatt });
             client.on('frame', frame => {
                 if (frame.func !== SDK.FUNC.EEG_RAW) logProtocol('RX', Core.bytesToHex(frame.raw));
             });
@@ -1436,7 +1458,7 @@
             addActivity(`已连接 ${transport.name}`);
             await audit('ble_connected', { deviceName: transport.name, deviceId: transport.id });
             try {
-                state.deviceInfo = await client.discover({ timeoutMs: 10000 });
+                state.deviceInfo = await client.discover(transport.legacyGatt ? undefined : { timeoutMs: 10000 });
                 const version = state.deviceInfo.protocolVersion;
                 const capabilityLabel = state.deviceInfo.compatibilityMode
                     ? '兼容模式'
@@ -1636,7 +1658,10 @@
         }
         let commandError = null;
         try { await client.configureEeg(expected); }
-        catch (error) { commandError = error; }
+        catch (error) {
+            if (!impedance && state.transport?.legacyGatt) throw error;
+            commandError = error;
+        }
         await new Promise(resolve => setTimeout(resolve, 2));
         const after = await client.readAds1299Registers();
         const mismatches = SDK.ads1299.compareAdsConfig(expected, after.values);
@@ -1712,7 +1737,15 @@
         let commandError = null;
         // Streaming firmware can deliver replies behind buffered EEG packets.
         // One bounded transaction is preferable to queuing repeated stop clicks.
-        try { await client.stopEeg({ timeoutMs: 15000 }); } catch (error) { commandError = error; }
+        try {
+            if (state.transport?.legacyGatt) {
+                await client.stopEeg();
+                state.deviceEegRunning = false;
+                state.eegStopError = null;
+                return;
+            }
+            await client.stopEeg({ timeoutMs: 15000 });
+        } catch (error) { commandError = error; }
         try {
             const status = await client.getStatus({ timeoutMs: 10000 });
             state.deviceEegRunning = Boolean(status.eegRunning);
@@ -3266,6 +3299,35 @@
         else if (status.output) $('history-replay-status').textContent = '已有回放报告。修改光照条件后，可以再次回放。';
     }
 
+    function startLocalUpdateChecks() {
+        if (!window.desktopAPI.hasLocalUpdate()) return;
+        let checking = false;
+        const idle = () => !state.connected && !state.connecting && !state.eegRunning
+            && !state.activeSession && !state.eegStopPromise && !state.lightStatePending
+            && !state.lightRunning[1] && !state.lightRunning[2] && !document.querySelector('dialog[open]');
+        const check = async () => {
+            if (checking || !idle()) return;
+            checking = true;
+            let restarting = false;
+            try {
+                if (!await window.desktopAPI.checkLocalUpdate() || !idle()) return;
+                document.body.inert = true;
+                toast('已发现本地更新，正在重开曹操…');
+                restarting = await window.desktopAPI.restartForLocalUpdate();
+            } catch (error) {
+                console.warn('本机更新检查失败', error);
+            } finally {
+                if (!restarting) {
+                    document.body.inert = false;
+                    checking = false;
+                }
+            }
+        };
+        const timer = setInterval(check, 15_000);
+        window.addEventListener('beforeunload', () => clearInterval(timer), { once: true });
+        void check();
+    }
+
     async function init() {
         if (!SDK || !Core || !Sleep) throw new Error('BrainLume SDK 或实时分期模块加载失败');
         populateChannelSelects();
@@ -3312,6 +3374,7 @@
         }, 500);
         await audit('app_started', { version: '0.6.1', sdkVersion: SDK.VERSION });
         const launchMode = window.desktopAPI.getLaunchMode();
+        if (launchMode === 'normal') startLocalUpdateChecks();
         if (launchMode === 'device-diagnostic' || launchMode === 'device-diagnostic-long') {
             const durationSeconds = launchMode === 'device-diagnostic-long' ? 1800 : 60;
             state.deviceDiagnosticRunning = true;

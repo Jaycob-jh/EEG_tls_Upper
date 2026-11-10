@@ -36,15 +36,18 @@ async function inventory(root){
 }
 
 async function eventSummary(directory){
-    const counts={},gaps=[];let crc=0;
-    const file=path.join(directory,'events.jsonl');if(!fs.existsSync(file))return {counts,gaps,crc};
+    const counts={},gaps=[],lightEvents=[];let crc=0;
+    const file=path.join(directory,'events.jsonl');if(!fs.existsSync(file))return {counts,gaps,crc,lightEvents};
     for await(const line of readline.createInterface({input:fs.createReadStream(file),crlfDelay:Infinity})){
         let e;try{e=JSON.parse(line);}catch{continue;}
         counts[e.action]=(counts[e.action]||0)+1;
+        if (e.action === 'light_started' || e.action === 'light_stopped') {
+            lightEvents.push({ action: e.action, channel: e.channel, time: Date.parse(e.ts) });
+        }
         if(e.action==='eeg_seq_gap')gaps.push({seq:e.seq,gapSamples:e.gapSamples,ts:e.ts});
         if(e.action==='protocol_error'&&/crc|校验/i.test(String(e.error||e.errorName||'')))crc++;
     }
-    return {counts,gaps,crc};
+    return {counts,gaps,crc,lightEvents};
 }
 
 async function loadRecording(record){
@@ -98,6 +101,45 @@ function simulate(predictions,protocol){
             powerPercent:p.powerPercent,hardwareCommandsSent:0,kind:'simulation_only'});
     }
     return {protocol:p,triggers,reasons,hardwareCommandsSent:0};
+}
+
+function compareN3Votes(predictions, options = {}) {
+    const lightEvents = options.lightEvents || [];
+    const sessionStart = Date.parse(options.startedAt);
+    if (lightEvents.length && (!options.recordedTimeline || !Number.isFinite(sessionStart)
+        || lightEvents.some(event => !Number.isFinite(event.time)))) {
+        return { unavailable: '有光照记录，但无法与脑电片段对齐' };
+    }
+    const lightIntervals = [];
+    const active = new Map();
+    for (const event of lightEvents) {
+        const time = event.time - sessionStart;
+        if (event.action === 'light_started') {
+            if (!active.has(event.channel)) active.set(event.channel, time);
+        } else if (active.has(event.channel)) {
+            lightIntervals.push([active.get(event.channel), time]);
+            active.delete(event.channel);
+        }
+    }
+    for (const start of active.values()) lightIntervals.push([start, Infinity]);
+
+    const trial = new Sleep.N3VoteTrial();
+    const cnnHits = [];
+    const voteHits = [];
+    const reasons = {};
+    for (const row of predictions) {
+        const end = row.observedEndMs;
+        const lightOn = lightIntervals.some(([start, stop]) => start <= end && stop >= end - 30_000);
+        const decision = trial.evaluate(lightOn ? { ...row, lightChannels: [1] } : row, end);
+        if (!decision) continue;
+        const hit = { epochIndex: row.epochIndex, seconds: end / 1000,
+            n3Probability: decision.n3Probability, deltaRatio: decision.deltaRatio };
+        if (decision.cnn.triggered) cnnHits.push(hit);
+        if (decision.vote.triggered) voteHits.push(hit);
+        const reason = decision.vote.triggered ? 'triggered' : decision.vote.reason;
+        reasons[reason] = (reasons[reason] || 0) + 1;
+    }
+    return { profile: Sleep.N3_VOTE_PROFILE, cnnHits, voteHits, reasons, hardwareCommandsSent: 0 };
 }
 
 async function inferAll(data,model,ort,onProgress=()=>{},isCancelled=()=>false,mode='causal'){
@@ -171,6 +213,10 @@ async function runBatch(options,onProgress=()=>{}){
             item.quality=replay.qualityCounts;item.duplicates=replay.duplicates;item.knownMissingSamples=replay.missing;item.nonmonotonicTimestamps=replay.nonmonotonic;
             item.replay=simulate(replay.predictions,protocol);
             item.n3Review=simulate(replay.predictions,{...protocol,targetStages:['N3']});
+            item.n3VoteTrial = compareN3Votes(replay.predictions, {
+                startedAt: record.metadata.startedAt, lightEvents: events.lightEvents,
+                recordedTimeline: data.timeline === 'recorded' && !replay.nonmonotonic,
+            });
             item.stages=Object.fromEntries([...STAGES,'UNKNOWN'].map(s=>[s,0]));let longest=0,run=0,previous=null;item.maxN3Probability=0;
             for(const row of replay.predictions){if(row.skipped){run=0;item.stages.UNKNOWN++;continue;}item.stages[row.stage]=(item.stages[row.stage]||0)+1;item.maxN3Probability=Math.max(item.maxN3Probability,row.probabilities[3]);
                 if(row.quality.ok&&row.stimulusControlEligible&&row.probabilities[3]>=protocol.minN3Probability){run=previous===row.epochIndex-1?run+1:1;}else run=0;longest=Math.max(longest,run);previous=row.epochIndex;}
@@ -200,13 +246,13 @@ function buildReport(report){
     const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const p=report.protocol;
     const counts={ok:'已回放',empty:'空记录',short:'不足30秒',skipped:'已跳过',failed:'失败'};
-    const rows=report.files.map(r=>`<tr><td>${esc(r.startedAt?.replace('T',' ').slice(0,19))}</td><td>${((r.seconds||0)/60).toFixed(1)}</td><td>${counts[r.result]||'未完成'}</td><td>${((r.maxN3Probability||0)*100).toFixed(1)}%</td><td>${r.longestEligibleN3Run??'--'}</td><td>${r.replay?.triggers.length??'--'}</td><td>${r.n3Review?.triggers.length??'--'}</td><td>${r.yasa?.ok?((r.yasa.stageCounts?.N3||0)/2).toFixed(1):esc(r.yasa?.reason||r.yasa?.error||'未完成')}</td><td><details><summary>查看</summary><p>${esc((r.warnings||[]).join(' '))}</p><p>${esc(r.error||'')}</p><a href="${esc(r.id)}/epochs.csv">逐片段结果</a></details></td></tr>`).join('');
+    const rows=report.files.map(r=>`<tr><td>${esc(r.startedAt?.replace('T',' ').slice(0,19))}</td><td>${((r.seconds||0)/60).toFixed(1)}</td><td>${counts[r.result]||'未完成'}</td><td>${((r.maxN3Probability||0)*100).toFixed(1)}%</td><td>${r.longestEligibleN3Run??'--'}</td><td>${r.replay?.triggers.length??'--'}</td><td>${r.n3Review?.triggers.length??'--'}</td><td title="${esc(r.n3VoteTrial?.unavailable || '')}">${r.n3VoteTrial?.cnnHits ? `${r.n3VoteTrial.cnnHits.length} / ${r.n3VoteTrial.voteHits.length}` : '--'}</td><td>${r.yasa?.ok?((r.yasa.stageCounts?.N3||0)/2).toFixed(1):esc(r.yasa?.reason||r.yasa?.error||'未完成')}</td><td><details><summary>查看</summary><p>${esc((r.warnings||[]).join(' '))}</p><p>${esc(r.error||'')}</p><a href="${esc(r.id)}/epochs.csv">逐片段结果</a></details></td></tr>`).join('');
     const watchRows=(report.watch?.sessions||[]).filter(w=>w.status==='available').map(w=>{
         const r=report.files.find(x=>x.id===w.id);if(!r)return '';
         return `<tr><td>${esc(r.startedAt?.replace('T',' ').slice(0,16))}</td><td>${Number(w.stageMinutes.AsleepDeep||0).toFixed(1)}</td><td>${r.yasa?.ok?((r.yasa.stageCounts?.N3||0)/2).toFixed(1):'--'}</td><td>${r.n3Review?.triggers.length??'--'}</td></tr>`;
     }).join('');
     const short=report.files.filter(r=>['short','empty'].includes(r.result)).length;
     const watch=watchRows?`<h2>同一时段：手表与脑电</h2><p>只比较有记录覆盖的时段。手表深睡与脑电 N3 来自不同算法，不能据此计算准确率。</p><table><tr><th>记录开始</th><th>手表深睡（分钟）</th><th>YASA N3（分钟）</th><th>实时回放 N3 命中</th></tr>${watchRows}</table>`:'';
-    return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>历史脑电回放</title><style>body{font:15px/1.7 system-ui;margin:32px;color:#18303a;background:#f4f7fa}h1{font-size:26px}table{border-collapse:collapse;width:100%;background:white}td,th{padding:10px;border:1px solid #d9e2e9;text-align:left}th{position:sticky;top:0;background:#eaf1fa}details{max-width:300px}small,p{color:#596b76}.notice{padding:14px;background:#fff5df}.table-wrap{overflow:auto}</style><h1>历史脑电回放</h1><p>${report.files.length} 条记录 · ${report.recordedHours.toFixed(2)} 小时数据 · 本次用时 ${report.elapsedSeconds.toFixed(1)} 秒</p><p>${report.files.filter(r=>r.seconds>=30).length} 条达到 30 秒；${short} 条不足 30 秒或为空。${report.cancelled?'本次提前停止，仅显示已完成部分。':''}</p><p>本次测试方案：${esc(p.targetStages.join(' / '))}；N3 概率至少 ${Math.round(p.minN3Probability*100)}%（选中 N3 时）；连续 ${p.consecutiveEpochs} 个 30 秒片段；${p.lightChannel===3?'两个光源一起':`光源 ${p.lightChannel}`}，${p.frequencyHz} Hz、${p.powerPercent}%、每次 ${p.durationSeconds/60} 分钟，启动间隔 ${p.cooldownMinutes} 分钟。仅模拟，不开灯。</p><div class="notice">${report.limitations.map(esc).join('<br>')}<br>“命中”表示满足回放规则，不代表真实睡眠准确率。N3 最高概率包含质量不合格的片段；是否达标还要看质量与连续次数。旧 EDF 的命中时刻不能直接对应钟表时间。</div><div class="table-wrap"><table><thead><tr><th>开始时间</th><th>数据分钟</th><th>状态</th><th>N3 最高概率</th><th>N3 最长连续达标</th><th>本次方案命中</th><th>仅选 N3 时命中</th><th>YASA N3 分钟</th><th>说明</th></tr></thead><tbody>${rows}</tbody></table></div>${watch}</html>`;
+    return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>历史脑电回放</title><style>body{font:15px/1.7 system-ui;margin:32px;color:#18303a;background:#f4f7fa}h1{font-size:26px}table{border-collapse:collapse;width:100%;background:white}td,th{padding:10px;border:1px solid #d9e2e9;text-align:left}th{position:sticky;top:0;background:#eaf1fa}details{max-width:300px}small,p{color:#596b76}.notice{padding:14px;background:#fff5df}.table-wrap{overflow:auto}</style><h1>历史脑电回放</h1><p>${report.files.length} 条记录 · ${report.recordedHours.toFixed(2)} 小时数据 · 本次用时 ${report.elapsedSeconds.toFixed(1)} 秒</p><p>${report.files.filter(r=>r.seconds>=30).length} 条达到 30 秒；${short} 条不足 30 秒或为空。${report.cancelled?'本次提前停止，仅显示已完成部分。':''}</p><p>本次测试方案：${esc(p.targetStages.join(' / '))}；N3 概率至少 ${Math.round(p.minN3Probability*100)}%（选中 N3 时）；连续 ${p.consecutiveEpochs} 个 30 秒片段；${p.lightChannel===3?'两个光源一起':`光源 ${p.lightChannel}`}，${p.frequencyHz} Hz、${p.powerPercent}%、每次 ${p.durationSeconds/60} 分钟，启动间隔 ${p.cooldownMinutes} 分钟。仅模拟，不开灯。</p><div class="notice">${report.limitations.map(esc).join('<br>')}<br>“命中”表示满足回放规则，不代表真实睡眠准确率。N3 最高概率包含质量不合格的片段；是否达标还要看质量与连续次数。旧 EDF 的命中时刻不能直接对应钟表时间。N3 双路对照使用 CNN 50%、慢波占比 50%、连续 4 段。</div><div class="table-wrap"><table><thead><tr><th>开始时间</th><th>数据分钟</th><th>状态</th><th>N3 最高概率</th><th>N3 最长连续达标</th><th>本次方案命中</th><th>仅选 N3 时命中</th><th>N3 模拟：CNN / 双路</th><th>YASA N3 分钟</th><th>说明</th></tr></thead><tbody>${rows}</tbody></table></div>${watch}</html>`;
 }
-module.exports={DEFAULT_PROTOCOL,inventory,eventSummary,loadRecording,makePrediction,simulate,inferAll,runBatch,buildReport};
+module.exports={DEFAULT_PROTOCOL,inventory,eventSummary,loadRecording,makePrediction,simulate,compareN3Votes,inferAll,runBatch,buildReport};
